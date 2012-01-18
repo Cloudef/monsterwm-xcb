@@ -1,5 +1,7 @@
-monsterwm-xcb
+monsterwm-xcb [dualhead branch]
 =============
+
+Don't use this yet, it won't work right!
 
 → tiny(!) and monsterous!
 ----------------------
