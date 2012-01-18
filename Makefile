@@ -14,11 +14,18 @@ CPPFLAGS = -DVERSION=\"${VERSION}\" -DWMNAME=\"${WMNAME}\"
 CFLAGS   = -std=c99 -pedantic -Wall -Wextra -Os ${INCS} ${CPPFLAGS}
 LDFLAGS  = -s ${LIBS}
 
+XINERAMA = 1
+
 CC 	 = cc
 EXEC = ${WMNAME}
 
 SRC = ${WMNAME}.c
 OBJ = ${SRC:.c=.o}
+
+ifeq (${XINERAMA},1)
+   LDFLAGS += -lxcb-xinerama
+   CFLAGS  += -DXINERAMA=1
+endif
 
 all: options ${WMNAME}
 
