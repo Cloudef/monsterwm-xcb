@@ -30,9 +30,9 @@
 
 /** open applications to specified desktop **/
 static const AppRule rules[] = { \
-    /*  class      desktop    follow */  /* desktop index starts from 0 */
-    { "MPlayer",      3,       True  },  /* if there are 4 desktops, 3 is the  */
-    { "Chromium",     0,       False },  /* last desktop, 0 is always the fist */
+    /*  class     desktop  follow  float */  /* desktop index starts from 0 */
+    { "MPlayer",     3,    True,   False },  /* if there are 4 desktops, 3 is the  */
+    { "Gimp",        0,    False,  True  },  /* last desktop, 0 is always the fist */
 };
 
 /* helper for spawning shell commands */
@@ -60,7 +60,10 @@ static key keys[] = {
     {  MOD1,             XK_p,          resize_stack,      {.i = +10}}, /* grow   */
     {  MOD1|SHIFT,       XK_Left,       rotate_desktop,    {.i = -1}},  /* prev */
     {  MOD1|SHIFT,       XK_Right,      rotate_desktop,    {.i = +1}},  /* next */
+    {  MOD4|SHIFT,       XK_Left,       rotate_monitor,    {.i = -1}},
+    {  MOD4|SHIFT,       XK_Right,      rotate_monitor,    {.i = +1}},
     {  MOD1,             XK_Tab,        last_desktop,      {NULL}},
+    {  MOD1|SHIFT,       XK_Tab,        last_monitor,      {NULL}},
     {  MOD1,             XK_Return,     swap_master,       {NULL}},
     {  MOD1|SHIFT,       XK_j,          move_down,         {NULL}},
     {  MOD1|SHIFT,       XK_k,          move_up,           {NULL}},
