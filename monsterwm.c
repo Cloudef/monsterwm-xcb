@@ -17,11 +17,6 @@
 #  include <xcb/xinerama.h>
 #endif
 
-/* BUGS: Windows disappear on desktop switch
- *       "Active" window on both monitors
- *       Monitor switching sucks
- */
-
 /* TODO: Reduce SLOC */
 
 /* set this to 1 to enable debug prints */
@@ -113,7 +108,7 @@ typedef struct {
  */
 typedef struct client {
     struct client *next;
-    struct monitor *monitor;
+    int monitor;
     bool isurgent, istransient, isfullscreen, isfloating;
     xcb_window_t win;
 } client;
@@ -134,14 +129,14 @@ typedef struct {
 } desktop;
 
 /* properties of each monitor */
-typedef struct monitor {
+typedef struct {
     bool showpanel;
     int current_desktop;
     int previous_desktop;
     int growth;
     int mode;
     int master_size;
-    int wh, ww, wx;
+    int wh, ww, wx, wy;
     client *head, *prevfocus, *current;
     desktop *desktops;
 } monitor;
@@ -159,7 +154,7 @@ typedef struct {
 } AppRule;
 
 /* Functions */
-static void addwindow(xcb_window_t w);
+static client* addwindow(xcb_window_t w);
 static void buttonpress(xcb_generic_event_t *e);
 static void change_monitor(const Arg *arg);
 static void change_desktop(const Arg *arg);
@@ -172,6 +167,7 @@ static void desktopinfo(void);
 static void destroynotify(xcb_generic_event_t *e);
 static void die(const char* errstr, ...);
 static void enternotify(xcb_generic_event_t *e);
+static void motionnotify(xcb_generic_event_t *e);
 static void focusurgent();
 static unsigned int getcolor(char* color);
 static void grabbuttons(client *c);
@@ -209,6 +205,7 @@ static void togglepanel();
 static void update_current(client *c);
 static void unmapnotify(xcb_generic_event_t *e);
 static client* wintoclient(xcb_window_t w);
+static int areatomonitor(int x, int y);
 
 #include "config.h"
 
@@ -342,7 +339,8 @@ static void xcb_get_attributes(xcb_window_t *windows, xcb_get_window_attributes_
 static int checkotherwm(void) {
     xcb_generic_error_t *error;
     unsigned int mask = XCB_CW_EVENT_MASK;
-    unsigned int values[1] = {XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT|XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY|XCB_EVENT_MASK_PROPERTY_CHANGE|XCB_EVENT_MASK_BUTTON_PRESS};
+    unsigned int values[1] = {XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT|XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY|XCB_EVENT_MASK_PROPERTY_CHANGE|
+                              XCB_EVENT_MASK_BUTTON_PRESS|(FOLLOW_MONITOR?XCB_EVENT_MASK_POINTER_MOTION:0)};
 
     error = xcb_request_check(dis, xcb_change_window_attributes_checked(dis, screen->root, mask, values));
     xcb_flush(dis);
@@ -351,15 +349,22 @@ static int checkotherwm(void) {
     return 0;
 }
 
+int areatomonitor(int x, int y) {
+    for (int m=0; m<MONITORS; m++)
+        if (monitors[m].wx < x && (monitors[m].wx + monitors[m].ww) > x &&
+            monitors[m].wy < y && (monitors[m].wy + monitors[m].wh) > y) return m;
+    return current_monitor;
+}
+
 /* create a new client and add the new window
  * window should notify of property change events
  */
-void addwindow(xcb_window_t w) {
+client* addwindow(xcb_window_t w) {
     client *c, *t;
     if (!(c = (client *)calloc(1, sizeof(client))))
         die("error: could not calloc() %u bytes\n", sizeof(client));
 
-    c->monitor = CM;
+    c->monitor = current_monitor;
     if (!CM->head) CM->head = c;
     else if (ATTACH_ASIDE) {
         for(t=CM->head; t->next; t=t->next); /* get the last client */
@@ -372,6 +377,8 @@ void addwindow(xcb_window_t w) {
     unsigned int mask = XCB_CW_EVENT_MASK;
     unsigned int values[1] = { XCB_EVENT_MASK_PROPERTY_CHANGE|(FOLLOW_MOUSE?XCB_EVENT_MASK_ENTER_WINDOW:0) };
     xcb_change_window_attributes_checked(dis, (CM->current=c)->win = w, mask, values);
+
+    return c;
 }
 
 /* on the press of a button check to see if there's a binded function to call */
@@ -396,7 +403,7 @@ void change_monitor(const Arg *arg) {
     if (arg->i == current_monitor) return;
     previous_monitor = current_monitor;
     select_monitor(arg->i);
-    update_current(NULL);
+    update_current(CM->current);
     desktopinfo();
 }
 
@@ -438,7 +445,7 @@ void cleanup(void) {
 
 void client_to_monitor(const Arg *arg) {
     if (arg->i == current_monitor || !CM->current) return;
-    if (arg->i < MONITORS && CM->current->monitor == &monitors[arg->i]) return;
+    if (arg->i < MONITORS && CM->current->monitor == current_monitor) return;
     xcb_window_t w = CM->current->win;
     int OLDM = current_monitor;
 
@@ -515,7 +522,8 @@ void configurerequest(xcb_generic_event_t *e) {
     client *c = wintoclient(ev->window);
 
     if (c && c->isfullscreen)
-        xcb_move_resize(dis, c->win, 0, 0, c->monitor->ww + BORDER_WIDTH, c->monitor->wh + BORDER_WIDTH + PANEL_HEIGHT);
+        xcb_move_resize(dis, c->win, monitors[c->monitor].wx, monitors[c->monitor].wy,
+                        monitors[c->monitor].ww + BORDER_WIDTH, monitors[c->monitor].wh + BORDER_WIDTH + PANEL_HEIGHT);
     else { /* TODO: area to monitor? */
         unsigned int v[7];
         unsigned int i = 0;
@@ -547,16 +555,17 @@ void configurerequest(xcb_generic_event_t *e) {
  */
 void desktopinfo(void) {
     bool urgent = false;
-    int cd = 0, n=0, d=0, m=0;
-    for (monitor *mon; m<MONITORS; m++) {
-        mon = &monitors[m]; cd = mon->current_desktop;
+    int OLDM = current_monitor, cd, n=0, d=0, m=0;
+    for (; m<MONITORS; m++) {
+        select_monitor(m); d = 0; cd = CM->current_desktop;
         for (client *c; d<DESKTOPS; d++) {
-            for (select_desktop(d), c=mon->head, n=0, urgent=false; c; c=c->next, ++n) if (c->isurgent) urgent = true;
-            fprintf(stdout, "%d:%d:%d:%d:%d:%d:%d%c", m, current_monitor == m, d, n, mon->mode, mon->current_desktop == cd, urgent, d+1==DESKTOPS?'\n':' ');
+            for (select_desktop(d), c=CM->head, n=0, urgent=false; c; c=c->next, ++n) if (c->isurgent) urgent = true;
+            fprintf(stdout, "%d:%d:%d:%d:%d:%d:%d%c", m, current_monitor == m, d, n, CM->mode, CM->current_desktop == cd, urgent, d+1==DESKTOPS?'\n':' ');
         }
+        select_desktop(cd);
     }
     fflush(stdout);
-    select_desktop(cd);
+    select_monitor(OLDM);
 }
 
 /* a destroy notification is received when a window is being closed
@@ -566,7 +575,7 @@ void destroynotify(xcb_generic_event_t *e) {
     DEBUG("xcb: destoroy notify");
     xcb_destroy_notify_event_t *ev = (xcb_destroy_notify_event_t*)e;
     client *c = wintoclient(ev->window);
-    if (c) removeclient(c);
+    if (c) removeclient(c); else { DEBUG("fail destroy"); }
     desktopinfo();
 }
 
@@ -591,6 +600,15 @@ void enternotify(xcb_generic_event_t *e) {
     DEBUG("xcb: enter notify");
     client *c = wintoclient(ev->event);
     if (c && ev->mode == XCB_NOTIFY_MODE_NORMAL && ev->detail != XCB_NOTIFY_DETAIL_INFERIOR) update_current(c);
+}
+
+void motionnotify(xcb_generic_event_t *e) {
+    xcb_motion_notify_event_t *ev = (xcb_motion_notify_event_t*)e;
+    int area_monitor;
+    if (!FOLLOW_MONITOR) return;
+    DEBUG("xcb: motion notify");
+    if ((area_monitor = areatomonitor(ev->root_x, ev->root_y)) != current_monitor)
+        change_monitor(&(Arg){.i = area_monitor});
 }
 
 /* find and focus the client which received
@@ -757,6 +775,7 @@ void mousemotion(const Arg *arg) {
     xcb_get_geometry_reply_t           *geometry;
     xcb_query_pointer_reply_t          *pointer;
     int mx, my, winx, winy, winw, winh, xw, yh;
+    xcb_window_t window = CM->current->win;
 
     geometry = xcb_get_geometry_reply(dis, xcb_get_geometry(dis, CM->current->win), NULL); /* TODO: error handling */
     if (geometry) {
@@ -775,6 +794,7 @@ void mousemotion(const Arg *arg) {
 
     xcb_generic_event_t *e;
     xcb_motion_notify_event_t *ev = NULL;
+    int area_monitor;
     do {
         while(!(e = xcb_wait_for_event(dis)));
         switch (e->response_type & ~0x80) {
@@ -787,7 +807,15 @@ void mousemotion(const Arg *arg) {
                 xw = (arg->i == MOVE ? winx : winw) + ev->root_x - mx;
                 yh = (arg->i == MOVE ? winy : winh) + ev->root_y - my;
                 if (arg->i == RESIZE) xcb_resize(dis, CM->current->win, xw>MINWSZ?xw:MINWSZ, yh>MINWSZ?yh:MINWSZ);
-                else if (arg->i == MOVE) xcb_move(dis, CM->current->win, xw, yh);
+                else if (arg->i == MOVE) {
+                    xcb_move(dis, CM->current->win, xw, yh);
+                    if ((area_monitor = areatomonitor(xw, yh)) != current_monitor) {
+                        if (CM->current->isfullscreen) setfullscreen(CM->current, false);
+                        removeclient(CM->current);
+                        change_monitor(&(Arg){.i = area_monitor});
+                        update_current(addwindow(window));
+                    }
+                }
                 xcb_flush(dis);
                 break;
         }
@@ -932,8 +960,11 @@ void quit(const Arg *arg) {
  * back the current focused desktop
  */
 void removeclient(client *c) {
+    DEBUG("xcb: removeclient");
     client **p = NULL;
-    monitor *OLDM = CM; CM = c->monitor;
+    int OLDM = current_monitor;
+    select_monitor(c->monitor);
+    DEBUGP("remove monitor: %d\n", c->monitor);
     int nd = 0, cd = CM->current_desktop;
     for (bool found = false; nd<DESKTOPS && !found; nd++)
         for (select_desktop(nd), p = &CM->head; *p && !(found = *p == c); p = &(*p)->next);
@@ -944,7 +975,8 @@ void removeclient(client *c) {
     if (CM->mode == MONOCLE && cd == --nd && CM->current) xcb_map_window(dis, CM->current->win);
     update_current(NULL);
     free(c);
-    CM = OLDM; /* switch back */
+    select_monitor(OLDM);
+    update_current(NULL);
 }
 
 /* resize the master window - check for boundary size limits
@@ -988,7 +1020,6 @@ void run(void) {
 
 void select_monitor(int i) {
    if (i >= MONITORS) return;
-   DEBUGP("select_monitor: %d\n", i);
    CM = &monitors[i];
    current_monitor = i;
 }
@@ -1040,7 +1071,8 @@ void setfullscreen(client *c, bool fullscreen) {
     DEBUGP("xcb: set fullscreen: %d\n", fullscreen);
     cookie = xcb_change_property(dis, XCB_PROP_MODE_REPLACE, c->win, netatoms[NET_WM_STATE], XCB_ATOM, 32, sizeof(xcb_atom_t),
                        ((c->isfullscreen = fullscreen) ? &netatoms[NET_FULLSCREEN] : &XCB_ATOM_NULL));
-    if (c->isfullscreen) xcb_move_resize(dis, c->win, 0, 0, c->monitor->ww + BORDER_WIDTH, c->monitor->wh + BORDER_WIDTH + PANEL_HEIGHT);
+    if (c->isfullscreen) xcb_move_resize(dis, c->win, monitors[c->monitor].wx, monitors[c->monitor].wy,
+                                         monitors[c->monitor].ww + BORDER_WIDTH, monitors[c->monitor].wh + BORDER_WIDTH + PANEL_HEIGHT);
 
     /* check error here */
     error = xcb_request_check(dis, cookie);
@@ -1090,38 +1122,43 @@ int setup(int default_screen) {
     /* check if another wm is running */
     if (checkotherwm()) die("error: other wm is running\n");
 
+    /* ugly xinerama code */
 #if XINERAMA
-    xcb_xinerama_get_screen_count_reply_t *xinerama_reply;
-    if (!(xinerama_reply = xcb_xinerama_get_screen_count_reply(dis, xcb_xinerama_get_screen_count(dis, screen->root), NULL))) /* TODO: check error */
-        die("error: xinerama failed to retieve screen count\n");
-    MONITORS = xinerama_reply->screen_count;
+    xcb_xinerama_query_screens_reply_t *xinerama_reply;
+    xcb_xinerama_screen_info_iterator_t xinerama_iter;
+    if (!(xinerama_reply = xcb_xinerama_query_screens_reply(dis, xcb_xinerama_query_screens(dis), NULL))) /* TODO: check error */
+        die("error: xinerama failed to query screens\n");
+    xinerama_iter = xcb_xinerama_query_screens_screen_info_iterator(xinerama_reply);
+    MONITORS = xinerama_iter.rem;
+    free(xinerama_reply);
 #endif
     DEBUGP("MONITORS: %d\n", MONITORS);
     if (!(monitors = calloc(MONITORS, sizeof(monitor)))) die("error: could not allocate memory for monitors");
-    int offsetx = 0;
-    for (int i=0; i<MONITORS; i++) {
-        CM = &monitors[i]; current_monitor = i;
+    int i = 0;
+#if XINERAMA
+    for (; xinerama_iter.rem; xcb_xinerama_screen_info_next(&xinerama_iter)) {
+#else
+    for (; i<MONITORS; i++) {
+#endif
+        select_monitor(i++);
         if (!(CM->desktops = calloc(DESKTOPS, sizeof(desktop)))) die("error: could not allocate memory for desktops @ monitor %d\n", i);
 #if XINERAMA
-        xcb_xinerama_get_screen_size_reply_t *xinerama_size;
-        if (!(xinerama_size = xcb_xinerama_get_screen_size_reply(dis, xcb_xinerama_get_screen_size(dis, screen->root, i), NULL))) /* TODO: check error */
-            die("error: xinerama failed to get screen size for monitor %d\n", i);
-        CM->ww = xinerama_size->width - BORDER_WIDTH;
-        CM->wh = xinerama_size->height - (SHOW_PANEL ? PANEL_HEIGHT : 0) - BORDER_WIDTH;
+        CM->ww = xinerama_iter.data->width - BORDER_WIDTH;
+        CM->wh = xinerama_iter.data->height - (SHOW_PANEL ? PANEL_HEIGHT : 0) - BORDER_WIDTH;
+        CM->wx = xinerama_iter.data->x_org; CM->wy = xinerama_iter.data->y_org;
 #else
         CM->ww = screen->width_in_pixels  - BORDER_WIDTH;
         CM->wh = screen->height_in_pixels - (SHOW_PANEL ? PANEL_HEIGHT : 0) - BORDER_WIDTH;
+        CM->wx = 0; CM->wy = 0;
 #endif
-        CM->wx = offsetx; offsetx += CM->ww;
         CM->showpanel = SHOW_PANEL;
         CM->mode = DEFAULT_MODE;
         CM->master_size = ((CM->mode == BSTACK) ? CM->wh : CM->ww) * MASTER_SIZE;
-        CM->current = CM->head = CM->prevfocus = NULL;
 
         for (int d=0; d<DESKTOPS; d++) save_desktop(d);
         change_desktop(&(Arg){.i = DEFAULT_DESKTOP});
 
-        DEBUGP("%d: %dx%d+%d,%d\n", i, CM->ww, CM->wh, CM->wx, 0);
+        DEBUGP("%d: %dx%d+%d,%d\n", i, CM->ww, CM->wh, CM->wx, CM->wy);
     } change_monitor(&(Arg){.i = DEFAULT_MONITOR});
 
     win_focus   = getcolor(FOCUS);
@@ -1149,6 +1186,7 @@ int setup(int default_screen) {
     events[XCB_MAP_REQUEST]         = maprequest;
     events[XCB_PROPERTY_NOTIFY]     = propertynotify;
     events[XCB_UNMAP_NOTIFY]        = unmapnotify;
+    events[XCB_MOTION_NOTIFY]       = motionnotify;
 
     return 0;
 }
@@ -1212,21 +1250,21 @@ void tile(void) {
 
     if (!CM->head->next || (CM->head->next->istransient && !CM->head->next->next) || CM->mode == MONOCLE) {
         for (c=CM->head; c; c=c->next) if (!c->isfullscreen && !c->istransient && !c->isfloating)
-            xcb_move_resize(dis, c->win, CM->wx + cx, cy, CM->ww + BORDER_WIDTH, h + BORDER_WIDTH);
+            xcb_move_resize(dis, c->win, CM->wx + cx, CM->wy + cy, CM->ww + BORDER_WIDTH, h + BORDER_WIDTH);
     } else if (CM->mode == TILE || CM->mode == BSTACK) {
         d = (z - CM->growth)%n + CM->growth;       /* n should be greater than one */
         z = (z - CM->growth)/n;         /* adjust to match screen height/width */
         if (!CM->head->isfullscreen && !CM->head->istransient && !CM->head->isfloating)
-            (CM->mode == BSTACK) ? xcb_move_resize(dis, CM->head->win, CM->wx + cx, cy, CM->ww - BORDER_WIDTH, CM->master_size - BORDER_WIDTH)
-                                 : xcb_move_resize(dis, CM->head->win, CM->wx + cx, cy, CM->master_size - BORDER_WIDTH,  h - BORDER_WIDTH);
+            (CM->mode == BSTACK) ? xcb_move_resize(dis, CM->head->win, CM->wx + cx, CM->wy + cy, CM->ww - BORDER_WIDTH, CM->master_size - BORDER_WIDTH)
+                                 : xcb_move_resize(dis, CM->head->win, CM->wx + cx, CM->wy + cy, CM->master_size - BORDER_WIDTH,  h - BORDER_WIDTH);
         for (c=CM->head->next; c && (c->isfullscreen || c->istransient || c->isfloating); c=c->next);
-        if (c) (CM->mode == BSTACK) ? xcb_move_resize(dis, c->win, CM->wx + cx, (cy += CM->master_size),
+        if (c) (CM->mode == BSTACK) ? xcb_move_resize(dis, c->win, CM->wx + cx, CM->wy + (cy += CM->master_size),
                                 (cw = z - BORDER_WIDTH) + d, (ch = h - CM->master_size - BORDER_WIDTH))
-                                : xcb_move_resize(dis, c->win, CM->wx + (cx += CM->master_size), cy,
+                                : xcb_move_resize(dis, c->win, CM->wx + (cx += CM->master_size), CM->wy + cy,
                                 (cw = CM->ww - CM->master_size - BORDER_WIDTH), (ch = z - BORDER_WIDTH) + d);
         if (c) for (CM->mode==BSTACK?(cx+=z+d):(cy+=z+d), c=c->next; c; c=c->next)
             if (!c->isfullscreen && !c->istransient && !c->isfloating) {
-                xcb_move_resize(dis, c->win, CM->wx + cx, cy, cw, ch);
+                xcb_move_resize(dis, c->win, CM->wx + cx, CM->wy + cy, cw, ch);
                 (CM->mode == BSTACK) ? (cx+=z) : (cy+=z);
             }
     } else if (CM->mode == GRID) {
@@ -1242,7 +1280,7 @@ void tile(void) {
             cx = cn*cw;
             cy = (TOP_PANEL && CM->showpanel ? PANEL_HEIGHT : 0) + rn*ch;
             if (!c->isfullscreen && !c->istransient && !c->isfloating)
-                xcb_move_resize(dis, c->win, CM->wx + cx, cy, cw - BORDER_WIDTH, ch - BORDER_WIDTH);
+                xcb_move_resize(dis, c->win, CM->wx + cx, CM->wy + cy, cw - BORDER_WIDTH, ch - BORDER_WIDTH);
             if (++rn >= rows) { rn = 0; cn++; }
         }
     } else fprintf(stderr, "error: no such layout mode: %d\n", CM->mode);
@@ -1278,11 +1316,13 @@ void update_current(client *c) {
     int border_width = (!CM->head->next || (CM->head->next->istransient &&
                         !CM->head->next->next) || CM->mode == MONOCLE) ? 0 : BORDER_WIDTH;
 
-    for (client *c=CM->head; c; c=c->next) {
-        xcb_border_width(dis, c->win, (c->isfullscreen ? 0 : border_width));
-        xcb_change_window_attributes(dis, c->win, XCB_CW_BORDER_PIXEL, (CM->current == c ? &win_focus : &win_unfocus));
-        if (CLICK_TO_FOCUS) xcb_grab_button(dis, 1, c->win, XCB_EVENT_MASK_BUTTON_PRESS, XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC,
-           screen->root, XCB_NONE, XCB_BUTTON_INDEX_1, XCB_BUTTON_MASK_ANY);
+    for (int m=0; m<MONITORS; m++) {
+        for (client *c=monitors[m].head; c; c=c->next) {
+            xcb_border_width(dis, c->win, (c->isfullscreen ? 0 : border_width));
+            xcb_change_window_attributes(dis, c->win, XCB_CW_BORDER_PIXEL, (CM->current == c ? &win_focus : &win_unfocus));
+            if (CLICK_TO_FOCUS) xcb_grab_button(dis, 1, c->win, XCB_EVENT_MASK_BUTTON_PRESS, XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC,
+               screen->root, XCB_NONE, XCB_BUTTON_INDEX_1, XCB_BUTTON_MASK_ANY);
+        }
     }
 
     xcb_change_property(dis, XCB_PROP_MODE_REPLACE, screen->root, netatoms[NET_ACTIVE], XCB_ATOM_WINDOW, 32, sizeof(xcb_window_t), &CM->current->win);
@@ -1299,14 +1339,14 @@ void update_current(client *c) {
 /* find to which client the given window belongs to */
 client* wintoclient(xcb_window_t w) {
     client *c = NULL;
-    int d = 0, m = 0, OLDM = current_monitor, cd = CM->current_desktop; bool found = 0;
+    int d = 0, m = 0, OLDM = current_monitor, cd; bool found = false;
     for (; m<MONITORS && !found; ++m) {
-        select_monitor(m);
+        select_monitor(m); d = 0; cd = CM->current_desktop;
         for (; d<DESKTOPS && !found; ++d)
             for (select_desktop(d), c=monitors[m].head; c && !(found = (w == c->win)); c=c->next);
+        select_desktop(cd);
     }
     select_monitor(OLDM);
-    select_desktop(cd);
     return c;
 }
 

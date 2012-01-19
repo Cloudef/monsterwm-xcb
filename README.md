@@ -1,7 +1,8 @@
 monsterwm-xcb [dualhead branch]
 =============
 
-Don't use this yet, it won't work right!
+dualhead branch: Support for multiple monitors!
+Code is still quite fresh, do report bugs :)
 
 → tiny(!) and monsterous!
 ----------------------

@@ -18,11 +18,13 @@
 #define ATTACH_ASIDE    True      /* False means new window is master */
 #define FOLLOW_MOUSE    False     /* Focus the window the mouse just entered */
 #define FOLLOW_WINDOW   False     /* Follow the window when moved to a different desktop */
+#define FOLLOW_MONITOR  False     /* Active monitor if mouse is there */
 #define CLICK_TO_FOCUS  False     /* Focus an unfocused window when clicked */
 #define BORDER_WIDTH    2         /* window border width */
 #define FOCUS           "#ff950e" /* focused window border color   */
 #define UNFOCUS         "#444444" /* unfocused window border color */
 #define DESKTOPS        4         /* number of desktops - edit DESKTOPCHANGE keys to suit */
+#define DEFAULT_MONITOR 0         /* the monitor to focus on exec */
 #define DEFAULT_DESKTOP 0         /* the desktop to focus on exec */
 #define MINWSZ          50        /* minimum window size in pixels */
 
