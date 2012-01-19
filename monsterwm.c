@@ -432,6 +432,10 @@ void cleanup(void) {
     xcb_query_tree_reply_t  *reply;
     unsigned int nchildren;
 
+    for (int m=0; m<MONITORS; m++)
+        free(monitors[m].desktops);
+    free(monitors);
+
     xcb_ungrab_key(dis, XCB_GRAB_ANY, screen->root, XCB_MOD_MASK_ANY);
     reply = xcb_query_tree_reply(dis, xcb_query_tree(dis, screen->root), NULL); /* TODO: error handling */
     if (reply) {
@@ -1109,6 +1113,20 @@ int setup_keyboard(void)
     return 0;
 }
 
+static void  setup_monitor(int i, int x, int y, int w, int h)
+{
+    select_monitor(i);
+    if (!(CM->desktops = calloc(DESKTOPS, sizeof(desktop)))) die("error: could not allocate memory for desktops @ monitor %d\n", i);
+    CM->ww = w; CM->wh = h; CM->wx = x; CM->wy = y;
+    CM->showpanel = SHOW_PANEL; CM->mode = DEFAULT_MODE;
+    CM->master_size = ((CM->mode == BSTACK) ? CM->wh : CM->ww) * MASTER_SIZE;
+
+    for (int d=0; d<DESKTOPS; d++) save_desktop(d);
+    change_desktop(&(Arg){.i = DEFAULT_DESKTOP});
+
+    DEBUGP("%d: %dx%d+%d,%d\n", i, CM->ww, CM->wh, CM->wx, CM->wy);
+}
+
 /* set initial values
  * root window - screen height/width - atoms - xerror handler
  * set masks for reporting events handled by the wm
@@ -1122,44 +1140,35 @@ int setup(int default_screen) {
     /* check if another wm is running */
     if (checkotherwm()) die("error: other wm is running\n");
 
-    /* ugly xinerama code */
 #if XINERAMA
     xcb_xinerama_query_screens_reply_t *xinerama_reply;
     xcb_xinerama_screen_info_iterator_t xinerama_iter;
     if (!(xinerama_reply = xcb_xinerama_query_screens_reply(dis, xcb_xinerama_query_screens(dis), NULL))) /* TODO: check error */
         die("error: xinerama failed to query screens\n");
     xinerama_iter = xcb_xinerama_query_screens_screen_info_iterator(xinerama_reply);
-    MONITORS = xinerama_iter.rem;
+    MONITORS = xinerama_iter.rem?xinerama_iter.rem:MONITORS;
     free(xinerama_reply);
-#endif
+#endif /* XINERAMA */
+
+    /* alloc monitors */
     DEBUGP("MONITORS: %d\n", MONITORS);
     if (!(monitors = calloc(MONITORS, sizeof(monitor)))) die("error: could not allocate memory for monitors");
-    int i = 0;
-#if XINERAMA
-    for (; xinerama_iter.rem; xcb_xinerama_screen_info_next(&xinerama_iter)) {
-#else
-    for (; i<MONITORS; i++) {
-#endif
-        select_monitor(i++);
-        if (!(CM->desktops = calloc(DESKTOPS, sizeof(desktop)))) die("error: could not allocate memory for desktops @ monitor %d\n", i);
-#if XINERAMA
-        CM->ww = xinerama_iter.data->width - BORDER_WIDTH;
-        CM->wh = xinerama_iter.data->height - (SHOW_PANEL ? PANEL_HEIGHT : 0) - BORDER_WIDTH;
-        CM->wx = xinerama_iter.data->x_org; CM->wy = xinerama_iter.data->y_org;
-#else
-        CM->ww = screen->width_in_pixels  - BORDER_WIDTH;
-        CM->wh = screen->height_in_pixels - (SHOW_PANEL ? PANEL_HEIGHT : 0) - BORDER_WIDTH;
-        CM->wx = 0; CM->wy = 0;
-#endif
-        CM->showpanel = SHOW_PANEL;
-        CM->mode = DEFAULT_MODE;
-        CM->master_size = ((CM->mode == BSTACK) ? CM->wh : CM->ww) * MASTER_SIZE;
 
-        for (int d=0; d<DESKTOPS; d++) save_desktop(d);
-        change_desktop(&(Arg){.i = DEFAULT_DESKTOP});
-
-        DEBUGP("%d: %dx%d+%d,%d\n", i, CM->ww, CM->wh, CM->wx, CM->wy);
-    } change_monitor(&(Arg){.i = DEFAULT_MONITOR});
+#if XINERAMA
+    if (xinerama_iter.rem) {
+        for (int i=0; xinerama_iter.rem; xcb_xinerama_screen_info_next(&xinerama_iter)) {
+            setup_monitor(i++, xinerama_iter.data->x_org, xinerama_iter.data->y_org,
+                          xinerama_iter.data->width - BORDER_WIDTH,
+                          xinerama_iter.data->height - (SHOW_PANEL ? PANEL_HEIGHT : 0) - BORDER_WIDTH);
+        }
+    } else
+#endif /* XINERAMA */
+    {
+        setup_monitor(0, 0, 0,
+                screen->width_in_pixels - BORDER_WIDTH,
+                screen->height_in_pixels - (SHOW_PANEL ? PANEL_HEIGHT : 0) - BORDER_WIDTH);
+    }
+    change_monitor(&(Arg){.i = DEFAULT_MONITOR});
 
     win_focus   = getcolor(FOCUS);
     win_unfocus = getcolor(UNFOCUS);
