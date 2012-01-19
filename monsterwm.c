@@ -211,6 +211,7 @@ static void update_current(client *c);
 static void unmapnotify(xcb_generic_event_t *e);
 static client* wintoclient(xcb_window_t w);
 static int areatomonitor(int x, int y);
+static void drawbars();
 
 #include "config.h"
 
@@ -353,7 +354,6 @@ static int checkotherwm(void) {
                               XCB_EVENT_MASK_BUTTON_PRESS|(FOLLOW_MONITOR?XCB_EVENT_MASK_POINTER_MOTION:0)};
 
     error = xcb_request_check(dis, xcb_change_window_attributes_checked(dis, screen->root, mask, values));
-    xcb_flush(dis);
 
     if (error) return 1;
     return 0;
@@ -406,7 +406,6 @@ void buttonpress(xcb_generic_event_t *e) {
             update_current(c);
             buttons[i].func(&(buttons[i].arg));
         }
-    xcb_flush(dis);
 }
 
 void change_monitor(const Arg *arg) {
@@ -454,7 +453,6 @@ void cleanup(void) {
         free(reply);
     }
     xcb_set_input_focus(dis, XCB_NONE, XCB_INPUT_FOCUS_POINTER_ROOT, XCB_CURRENT_TIME);
-    xcb_flush(dis);
 }
 
 void client_to_monitor(const Arg *arg) {
@@ -549,7 +547,6 @@ void configurerequest(xcb_generic_event_t *e) {
         if (ev->value_mask & XCB_CONFIG_WINDOW_SIBLING)        v[i++] = ev->sibling;
         if (ev->value_mask & XCB_CONFIG_WINDOW_STACK_MODE)     v[i++] = ev->stack_mode;
         xcb_configure_window(dis, ev->window, ev->value_mask, v);
-        xcb_flush(dis);
     }
     tile();
 }
@@ -658,7 +655,6 @@ void grabbuttons(client *c) {
         for (unsigned int m=0; m<LENGTH(modifiers); m++)
             xcb_grab_button(dis, 1, c->win, XCB_EVENT_MASK_BUTTON_PRESS, XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC,
                     screen->root, XCB_NONE, buttons[b].button, buttons[b].mask|modifiers[m]);
-    xcb_flush(dis);
 }
 
 /* the wm should listen to key presses */
@@ -672,7 +668,6 @@ void grabkeys(void) {
             for (unsigned int m=0; m<LENGTH(modifiers); m++)
                 xcb_grab_key(dis, 1, screen->root, keys[i].mod | modifiers[m], keycode[k], XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
     }
-    xcb_flush(dis);
 }
 
 /* on the press of a key check to see if there's a binded function to call */
@@ -684,7 +679,6 @@ void keypress(xcb_generic_event_t *e) {
     for (unsigned int i=0; i<LENGTH(keys); i++)
         if (keysym == keys[i].keysym && CLEANMASK(keys[i].mod) == CLEANMASK(ev->state) && keys[i].func)
                 keys[i].func(&keys[i].arg);
-    xcb_flush(dis);
 }
 
 /* explicitly kill a client - close the highlighted window
@@ -830,6 +824,7 @@ void mousemotion(const Arg *arg) {
                         update_current(addwindow(window));
                     }
                 }
+                drawbars();
                 xcb_flush(dis);
                 break;
         }
@@ -1029,6 +1024,7 @@ void run(void) {
             else { DEBUGP("xcb: unimplented event: %d\n", ev->response_type & ~0x80); }
             free(ev);
         }
+        // drawbars();
     }
 }
 
@@ -1079,19 +1075,12 @@ void sendevent(xcb_window_t w, int atom) {
 }
 
 void setfullscreen(client *c, bool fullscreen) {
-    xcb_generic_error_t *error;
-    xcb_void_cookie_t cookie;
-
     DEBUGP("xcb: set fullscreen: %d\n", fullscreen);
-    cookie = xcb_change_property(dis, XCB_PROP_MODE_REPLACE, c->win, netatoms[NET_WM_STATE], XCB_ATOM, 32, sizeof(xcb_atom_t),
+    xcb_change_property(dis, XCB_PROP_MODE_REPLACE, c->win, netatoms[NET_WM_STATE], XCB_ATOM, 32, sizeof(xcb_atom_t),
                        ((c->isfullscreen = fullscreen) ? &netatoms[NET_FULLSCREEN] : &XCB_ATOM_NULL));
     if (c->isfullscreen) xcb_move_resize(dis, c->win, monitors[c->monitor].wx, monitors[c->monitor].wy,
                                          monitors[c->monitor].ww + BORDER_WIDTH, monitors[c->monitor].wh + BORDER_WIDTH + PANEL_HEIGHT);
-
-    /* check error here */
-    error = xcb_request_check(dis, cookie);
-    xcb_flush(dis);
-    if (error) { DEBUG("xcb: _NET_FULLSCREEN failed"); }
+    else drawbars();
 }
 
 /* get numlock modifier using xcb */
@@ -1135,10 +1124,9 @@ static void drawbar() {
     xcb_poly_fill_rectangle(dis, CM->bar_pixmap, CM->bar_gc, 1, rect+1);
 
     xcb_copy_area(dis, CM->bar_pixmap, CM->bar_win, CM->bar_gc, 0, 0, 0, 0, CM->ww + BORDER_WIDTH, PANEL_HEIGHT);
-    xcb_flush(dis);
 }
 
-static void drawbars() {
+void drawbars() {
     int OLDM = current_monitor;
     for (int m=0; m<MONITORS; m++)
     { select_monitor(m); drawbar(); }
@@ -1162,7 +1150,6 @@ static void setup_monitor(int i, int x, int y, int w, int h)
     CM->bar_gc     = xcb_generate_id(dis);
     xcb_create_pixmap(dis, screen->root_depth, CM->bar_pixmap, CM->bar_win, w, PANEL_HEIGHT);
     xcb_create_gc(dis, CM->bar_gc, CM->bar_pixmap, 0, 0);
-    drawbar();
 
     for (int d=0; d<DESKTOPS; d++) save_desktop(d);
     change_desktop(&(Arg){.i = DEFAULT_DESKTOP});
@@ -1209,6 +1196,7 @@ int setup(int default_screen) {
         setup_monitor(0, 0, 0, screen->width_in_pixels, screen->height_in_pixels);
     }
     change_monitor(&(Arg){.i = DEFAULT_MONITOR});
+    drawbars();
 
     win_focus   = getcolor(FOCUS);
     win_unfocus = getcolor(UNFOCUS);
@@ -1382,7 +1370,6 @@ void update_current(client *c) {
         xcb_ungrab_button(dis, XCB_BUTTON_INDEX_1, CM->current->win, XCB_BUTTON_MASK_ANY);
         grabbuttons(CM->current);
     }
-    xcb_flush(dis);
 }
 
 /* find to which client the given window belongs to */
