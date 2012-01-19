@@ -28,6 +28,9 @@
 #define DEFAULT_DESKTOP 0         /* the desktop to focus on exec */
 #define MINWSZ          50        /* minimum window size in pixels */
 
+/** bar configuration **/
+#define BAR_BACKGROUND "#161616"
+
 /** open applications to specified desktop **/
 static const AppRule rules[] = { \
     /*  class      desktop    follow */  /* desktop index starts from 0 */
