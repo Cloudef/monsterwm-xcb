@@ -1,6 +1,6 @@
 # Makefile for monsterwm - see LICENSE for license and copyright information
 
-VERSION = xcb-cloudef-git
+VERSION = xcb-cloudef-personal-git
 WMNAME  = monsterwm
 
 PREFIX ?= /usr/local
