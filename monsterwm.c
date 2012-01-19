@@ -139,6 +139,11 @@ typedef struct {
     int wh, ww, wx, wy;
     client *head, *prevfocus, *current;
     desktop *desktops;
+
+    /* bar */
+    xcb_window_t     bar_win;
+    xcb_pixmap_t     bar_pixmap;
+    xcb_gcontext_t   bar_gc;
 } monitor;
 
 /* define behavior of certain applications
@@ -267,6 +272,11 @@ static inline void xcb_raise_window(xcb_connection_t *con, xcb_window_t win) {
 static inline void xcb_border_width(xcb_connection_t *con, xcb_window_t win, int w) {
     unsigned int arg[1] = { w };
     xcb_configure_window(con, win, XCB_CONFIG_WINDOW_BORDER_WIDTH, arg);
+}
+
+/* wrapper to change single gc using xcb */
+static inline void xcb_change_gc_single(xcb_connection_t *conn, xcb_gcontext_t gc, uint32_t mask, uint32_t value) {
+        xcb_change_gc(conn, gc, mask, &value);
 }
 
 /* wrapper to get xcb keysymbol from keycode */
@@ -1113,13 +1123,46 @@ int setup_keyboard(void)
     return 0;
 }
 
-static void  setup_monitor(int i, int x, int y, int w, int h)
+static void drawbar() {
+    xcb_rectangle_t rect[] = {
+        {0, 0, CM->ww + BORDER_WIDTH, PANEL_HEIGHT}, /* BG */
+        {5, 5, PANEL_HEIGHT - 10, PANEL_HEIGHT - 10},
+    };
+    xcb_change_gc_single(dis, CM->bar_gc, XCB_GC_FOREGROUND, xcb_get_colorpixel(BAR_BACKGROUND));
+    xcb_poly_fill_rectangle(dis, CM->bar_pixmap, CM->bar_gc, 1, rect);
+
+    xcb_change_gc_single(dis, CM->bar_gc, XCB_GC_FOREGROUND, xcb_get_colorpixel("#FF0000"));
+    xcb_poly_fill_rectangle(dis, CM->bar_pixmap, CM->bar_gc, 1, rect+1);
+
+    xcb_copy_area(dis, CM->bar_pixmap, CM->bar_win, CM->bar_gc, 0, 0, 0, 0, CM->ww + BORDER_WIDTH, PANEL_HEIGHT);
+    xcb_flush(dis);
+}
+
+static void drawbars() {
+    int OLDM = current_monitor;
+    for (int m=0; m<MONITORS; m++)
+    { select_monitor(m); drawbar(); }
+    select_monitor(OLDM);
+}
+
+static void setup_monitor(int i, int x, int y, int w, int h)
 {
     select_monitor(i);
     if (!(CM->desktops = calloc(DESKTOPS, sizeof(desktop)))) die("error: could not allocate memory for desktops @ monitor %d\n", i);
-    CM->ww = w; CM->wh = h; CM->wx = x; CM->wy = y;
-    CM->showpanel = SHOW_PANEL; CM->mode = DEFAULT_MODE;
+    CM->ww = w - BORDER_WIDTH; CM->wh = h - (SHOW_PANEL ? PANEL_HEIGHT : 0) - BORDER_WIDTH;
+    CM->wx = x; CM->wy = y; CM->showpanel = SHOW_PANEL; CM->mode = DEFAULT_MODE;
     CM->master_size = ((CM->mode == BSTACK) ? CM->wh : CM->ww) * MASTER_SIZE;
+
+    CM->bar_win = xcb_generate_id(dis);
+    xcb_create_window(dis, XCB_COPY_FROM_PARENT, CM->bar_win, screen->root, x, y + (TOP_PANEL ? 0 : h - PANEL_HEIGHT), w, PANEL_HEIGHT,
+                      0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, NULL);
+    xcb_map_window(dis, CM->bar_win);
+
+    CM->bar_pixmap = xcb_generate_id(dis);
+    CM->bar_gc     = xcb_generate_id(dis);
+    xcb_create_pixmap(dis, screen->root_depth, CM->bar_pixmap, CM->bar_win, w, PANEL_HEIGHT);
+    xcb_create_gc(dis, CM->bar_gc, CM->bar_pixmap, 0, 0);
+    drawbar();
 
     for (int d=0; d<DESKTOPS; d++) save_desktop(d);
     change_desktop(&(Arg){.i = DEFAULT_DESKTOP});
@@ -1158,15 +1201,12 @@ int setup(int default_screen) {
     if (xinerama_iter.rem) {
         for (int i=0; xinerama_iter.rem; xcb_xinerama_screen_info_next(&xinerama_iter)) {
             setup_monitor(i++, xinerama_iter.data->x_org, xinerama_iter.data->y_org,
-                          xinerama_iter.data->width - BORDER_WIDTH,
-                          xinerama_iter.data->height - (SHOW_PANEL ? PANEL_HEIGHT : 0) - BORDER_WIDTH);
+                          xinerama_iter.data->width, xinerama_iter.data->height);
         }
     } else
 #endif /* XINERAMA */
     {
-        setup_monitor(0, 0, 0,
-                screen->width_in_pixels - BORDER_WIDTH,
-                screen->height_in_pixels - (SHOW_PANEL ? PANEL_HEIGHT : 0) - BORDER_WIDTH);
+        setup_monitor(0, 0, 0, screen->width_in_pixels, screen->height_in_pixels);
     }
     change_monitor(&(Arg){.i = DEFAULT_MONITOR});
 
