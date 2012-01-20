@@ -749,7 +749,7 @@ void maprequest(xcb_generic_event_t *e) {
 
     prop_reply  = xcb_get_property_reply(dis, xcb_get_property_unchecked(dis, 0, ev->window, netatoms[NET_WM_STATE], XCB_ATOM_ATOM, 0, 1), NULL); /* TODO: error handling */
     if (prop_reply) {
-        if (prop_reply->type == XCB_ATOM_ATOM && prop_reply->format == 32) {
+        if (prop_reply->format == 32) {
             unsigned char *v = xcb_get_property_value(prop_reply);
             for (unsigned int i=0; i<prop_reply->value_len; i++)
                 DEBUGP("%d : %d\n", i, v[0]);
@@ -781,7 +781,7 @@ void maprequest(xcb_generic_event_t *e) {
 void mousemotion(const Arg *arg) {
     if (!CM->current) return;
     xcb_get_geometry_reply_t           *geometry;
-    xcb_query_pointer_reply_t          *pointer;
+   xcb_query_pointer_reply_t          *pointer;
     int mx, my, winx, winy, winw, winh, xw, yh;
     xcb_window_t window = CM->current->win;
 
@@ -1078,8 +1078,8 @@ void sendevent(xcb_window_t w, int atom) {
 
 void setfullscreen(client *c, bool fullscreen) {
     DEBUGP("xcb: set fullscreen: %d\n", fullscreen);
-    long data[] = { (c->isfullscreen = fullscreen) ? netatoms[NET_FULLSCREEN] : 0, fullscreen };
-    xcb_change_property(dis, XCB_PROP_MODE_REPLACE, c->win, netatoms[NET_WM_STATE], XCB_ATOM_ATOM, 32, 2, data);
+    long data[] = { (c->isfullscreen = fullscreen) ? netatoms[NET_FULLSCREEN] : XCB_NONE };
+    xcb_change_property(dis, XCB_PROP_MODE_REPLACE, c->win, netatoms[NET_WM_STATE], XCB_ATOM_ATOM, 32, fullscreen, data);
     if (c->isfullscreen) xcb_move_resize(dis, c->win, 0, 0, CM->ww + BORDER_WIDTH, CM->wh + BORDER_WIDTH + PANEL_HEIGHT);
 }
 
@@ -1183,7 +1183,7 @@ int setup(int default_screen) {
     if (checkotherwm())
         die("error: other wm is running\n");
 
-    xcb_change_property(dis, XCB_PROP_MODE_REPLACE, screen->root, netatoms[NET_SUPPORTED], XCB_ATOM_CARDINAL, 32, NET_COUNT, netatoms);
+    xcb_change_property(dis, XCB_PROP_MODE_REPLACE, screen->root, netatoms[NET_SUPPORTED], XCB_ATOM_ATOM, 32, NET_COUNT, netatoms);
     grabkeys();
 
     /* set events */
