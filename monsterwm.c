@@ -338,11 +338,10 @@ static void xcb_get_attributes(xcb_window_t *windows, xcb_get_window_attributes_
 /* check if other wm exists */
 static int checkotherwm(void) {
     xcb_generic_error_t *error;
-    unsigned int mask = XCB_CW_EVENT_MASK;
     unsigned int values[1] = {XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT|XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY|XCB_EVENT_MASK_PROPERTY_CHANGE|
                               XCB_EVENT_MASK_BUTTON_PRESS|(FOLLOW_MONITOR?XCB_EVENT_MASK_POINTER_MOTION:0)};
 
-    error = xcb_request_check(dis, xcb_change_window_attributes_checked(dis, screen->root, mask, values));
+    error = xcb_request_check(dis, xcb_change_window_attributes_checked(dis, screen->root, XCB_CW_EVENT_MASK, values));
     xcb_flush(dis);
 
     if (error) return 1;
@@ -374,10 +373,9 @@ client* addwindow(xcb_window_t w) {
         CM->head = c;
     }
 
-    CM->prevfocus = CM->current;
     unsigned int mask = XCB_CW_EVENT_MASK;
     unsigned int values[1] = { XCB_EVENT_MASK_PROPERTY_CHANGE|(FOLLOW_MOUSE?XCB_EVENT_MASK_ENTER_WINDOW:0) };
-    xcb_change_window_attributes_checked(dis, (CM->current=c)->win = w, mask, values);
+    xcb_change_window_attributes_checked(dis, (c->win = w), XCB_CW_EVENT_MASK, values);
     return c;
 }
 
@@ -746,6 +744,7 @@ void maprequest(xcb_generic_event_t *e) {
     CM->current->istransient = transient?true:false;
     CM->current->isfloating  = floating;
     DEBUGP("transient: %d\n", CM->current->istransient);
+    DEBUGP("floating:  %d\n", CM->current->isfloating);
 
     prop_reply  = xcb_get_property_reply(dis, xcb_get_property_unchecked(dis, 0, ev->window, netatoms[NET_WM_STATE], XCB_ATOM_ATOM, 0, 1), NULL); /* TODO: error handling */
     if (prop_reply) {
