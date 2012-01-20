@@ -42,7 +42,6 @@
 #define XCB_MOVE        XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y
 #define XCB_RESIZE      XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT
 
-static const xcb_atom_t XCB_ATOM_NULL = 0;
 static char *WM_ATOM_NAME[]   = { "WM_PROTOCOLS", "WM_DELETE_WINDOW" };
 static char *NET_ATOM_NAME[]  = { "_NET_SUPPORTED", "_NET_WM_STATE_FULLSCREEN", "_NET_WM_STATE", "_NET_ACTIVE_WINDOW" };
 
@@ -711,7 +710,6 @@ void maprequest(xcb_generic_event_t *e) {
     xcb_icccm_get_wm_class_reply_t     ch;
     xcb_get_geometry_reply_t           *geometry;
     xcb_get_property_reply_t           *prop_reply;
-    xcb_atom_t                         *fullscreen_atom;
 
     DEBUG("xcb: map request");
     xcb_get_attributes(windows, attr, 1);
@@ -748,10 +746,10 @@ void maprequest(xcb_generic_event_t *e) {
     CM->current->isfloating  = floating;
     DEBUGP("transient: %d\n", CM->current->istransient);
 
-    prop_reply = xcb_get_property_reply(dis, xcb_get_property(dis, 0, screen->root, netatoms[NET_WM_STATE], XCB_ATOM, 0L, 1), NULL); /* TODO: error handling */
+    prop_reply  = xcb_get_property_reply(dis, xcb_get_property_unchecked(dis, 0, CM->current->win, netatoms[NET_WM_STATE], XCB_ATOM_ATOM, 0, 1), NULL); /* TODO: error handling */
     if (prop_reply) {
-        fullscreen_atom = xcb_get_property_value(prop_reply);
-        setfullscreen(CM->current, (fullscreen_atom[0] == netatoms[NET_FULLSCREEN]));
+        unsigned char *v = xcb_get_property_value(prop_reply);
+        setfullscreen(CM->current, (v[0] == netatoms[NET_FULLSCREEN]));
         free(prop_reply);
     }
 
@@ -1075,10 +1073,9 @@ void sendevent(xcb_window_t w, int atom) {
 
 void setfullscreen(client *c, bool fullscreen) {
     DEBUGP("xcb: set fullscreen: %d\n", fullscreen);
-    xcb_change_property(dis, XCB_PROP_MODE_REPLACE, c->win, netatoms[NET_WM_STATE], XCB_ATOM, 32, sizeof(xcb_atom_t),
-                       ((c->isfullscreen = fullscreen) ? &netatoms[NET_FULLSCREEN] : &XCB_ATOM_NULL));
-    if (c->isfullscreen) xcb_move_resize(dis, c->win, monitors[c->monitor].wx, monitors[c->monitor].wy,
-                                         monitors[c->monitor].ww + BORDER_WIDTH, monitors[c->monitor].wh + BORDER_WIDTH + PANEL_HEIGHT);
+    long data[] = { (c->isfullscreen = fullscreen) ? netatoms[NET_FULLSCREEN] : XCB_NONE };
+    xcb_change_property(dis, XCB_PROP_MODE_REPLACE, c->win, netatoms[NET_WM_STATE], XCB_ATOM_ATOM, 32, 1, data);
+    if (c->isfullscreen) xcb_move_resize(dis, c->win, 0, 0, CM->ww + BORDER_WIDTH, CM->wh + BORDER_WIDTH + PANEL_HEIGHT);
 }
 
 /* get numlock modifier using xcb */
@@ -1177,7 +1174,11 @@ int setup(int default_screen) {
     xcb_get_atoms(WM_ATOM_NAME, wmatoms, WM_COUNT);
     xcb_get_atoms(NET_ATOM_NAME, netatoms, NET_COUNT);
 
-    xcb_change_property(dis, XCB_PROP_MODE_REPLACE, screen->root, netatoms[NET_SUPPORTED], XCB_ATOM, 32, sizeof(xcb_atom_t) * NET_COUNT, netatoms);
+    /* check if another wm is running */
+    if (checkotherwm())
+        die("error: other wm is running\n");
+
+    xcb_change_property(dis, XCB_PROP_MODE_REPLACE, screen->root, netatoms[NET_SUPPORTED], XCB_ATOM_CARDINAL, 32, NET_COUNT, netatoms);
     grabkeys();
 
     /* set events */
@@ -1332,7 +1333,7 @@ void update_current(client *c) {
         }
     }
 
-    xcb_change_property(dis, XCB_PROP_MODE_REPLACE, screen->root, netatoms[NET_ACTIVE], XCB_ATOM_WINDOW, 32, sizeof(xcb_window_t), &CM->current->win);
+    xcb_change_property(dis, XCB_PROP_MODE_REPLACE, screen->root, netatoms[NET_ACTIVE], XCB_ATOM_WINDOW, 32, 1, &CM->current->win);
     xcb_set_input_focus(dis, XCB_INPUT_FOCUS_POINTER_ROOT, CM->current->win, XCB_CURRENT_TIME);
     xcb_raise_window(dis, CM->current->win);
 
