@@ -1165,7 +1165,6 @@ int setup(int default_screen) {
                 screen->width_in_pixels - BORDER_WIDTH,
                 screen->height_in_pixels - (SHOW_PANEL ? PANEL_HEIGHT : 0) - BORDER_WIDTH);
     }
-    change_monitor(&(Arg){.i = DEFAULT_MONITOR});
 
     win_focus   = getcolor(FOCUS);
     win_unfocus = getcolor(UNFOCUS);
@@ -1194,6 +1193,8 @@ int setup(int default_screen) {
     events[XCB_UNMAP_NOTIFY]        = unmapnotify;
     events[XCB_MOTION_NOTIFY]       = motionnotify;
 
+    change_monitor(&(Arg){.i = DEFAULT_MONITOR});
+    change_desktop(&(Arg){.i = DEFAULT_DESKTOP});
     return 0;
 }
 
