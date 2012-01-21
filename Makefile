@@ -8,7 +8,7 @@ BINDIR ?= ${PREFIX}/bin
 MANPREFIX = ${PREFIX}/share/man
 
 INCS = -I. -I/usr/include
-LIBS = -L/usr/lib -lc `pkg-config --libs xcb xcb-icccm xcb-keysyms`
+LIBS = -L/usr/lib -lc `pkg-config --libs xcb xcb-icccm xcb-keysyms cairo`
 
 CPPFLAGS = -DVERSION=\"${VERSION}\" -DWMNAME=\"${WMNAME}\"
 CFLAGS   = -std=c99 -pedantic -Wall -Wextra -Os ${INCS} ${CPPFLAGS}

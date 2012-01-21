@@ -17,6 +17,14 @@
 #  include <xcb/xinerama.h>
 #endif
 
+#include <cairo/cairo.h>
+#ifndef CAIRO_HAS_XCB_SURFACE
+#  error Cairo was not compiled with XCB support
+#endif
+
+#include <cairo/cairo-xcb.h>
+//#include <cairo/cairo-xcb-xrender.h>
+
 /* TODO: Reduce SLOC */
 
 /* set this to 1 to enable debug prints */
@@ -143,6 +151,8 @@ typedef struct {
     xcb_window_t     bar_win;
     xcb_pixmap_t     bar_pixmap;
     xcb_gcontext_t   bar_gc;
+    cairo_surface_t  *bar_cr_s;
+    cairo_t          *bar_cr;
 } monitor;
 
 /* define behavior of certain applications
@@ -235,7 +245,7 @@ static xcb_atom_t wmatoms[WM_COUNT], netatoms[NET_COUNT];
  */
 static void (*events[XCB_NO_OPERATION])(xcb_generic_event_t *e);
 
-/* get screen of display */
+/* get xcb screen of display */
 static xcb_screen_t *screen_of_display(xcb_connection_t *con, int screen) {
     xcb_screen_iterator_t iter;
 
@@ -244,6 +254,26 @@ static xcb_screen_t *screen_of_display(xcb_connection_t *con, int screen) {
         if (screen == 0) return iter.data;
 
     return NULL;
+}
+
+/* wrapper to get root visual type from xcb screen */
+xcb_visualtype_t *xcb_get_root_visual_type(xcb_screen_t *s) {
+    xcb_visualtype_t       *visual_type = NULL;
+    xcb_depth_iterator_t   depth_iter;
+
+    depth_iter = xcb_screen_allowed_depths_iterator(s);
+    for(;depth_iter.rem;xcb_depth_next(&depth_iter)) {
+        xcb_visualtype_iterator_t visual_iter;
+
+        visual_iter = xcb_depth_visuals_iterator(depth_iter.data);
+        for(;visual_iter.rem;xcb_visualtype_next(&visual_iter))
+            if(s->root_visual == visual_iter.data->visual_id) {
+                visual_type = visual_iter.data;
+                break;
+            }
+    }
+
+    return visual_type;
 }
 
 /* wrapper to move and resize window */
@@ -440,8 +470,10 @@ void cleanup(void) {
     xcb_query_tree_reply_t  *reply;
     unsigned int nchildren;
 
-    for (int m=0; m<MONITORS; m++)
+    for (int m=0; m<MONITORS; m++) {
+        cairo_destroy(monitors[m].bar_cr);
         free(monitors[m].desktops);
+    }
     free(monitors);
 
     xcb_ungrab_key(dis, XCB_GRAB_ANY, screen->root, XCB_MOD_MASK_ANY);
@@ -1153,9 +1185,20 @@ void drawbar(bool active_monitor) {
     xcb_change_gc_single(dis, CM->bar_gc, XCB_GC_FOREGROUND, xcb_get_colorpixel(
                 CM->mode == TILE ? "#ff0000" : CM->mode == BSTACK ? "#00FF00" : CM->mode == MONOCLE ? "#000000" : "#FFFFFF" ));
     xcb_poly_fill_rectangle(dis, CM->bar_pixmap, CM->bar_gc, 1, layout_vis);
+    offsetx += 20;
 
     /* render */
     xcb_copy_area(dis, CM->bar_pixmap, CM->bar_win, CM->bar_gc, 0, 0, 0, 0, CM->ww + BORDER_WIDTH, PANEL_HEIGHT);
+
+    cairo_text_extents_t te;
+    /* cairo draw */
+    cairo_set_source_rgba(CM->bar_cr,1,1,1,1);
+    cairo_select_font_face (CM->bar_cr, "Erusfont", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size(CM->bar_cr, 12);
+    cairo_text_extents(CM->bar_cr, "a", &te);
+    cairo_move_to(CM->bar_cr, offsetx - te.width / 2 - te.x_bearing, PANEL_HEIGHT / 2 - te.height / 2 - te.y_bearing);
+    cairo_show_text(CM->bar_cr, CM->mode == TILE ? "TILE" : CM->mode == BSTACK ? "BSTACK" : CM->mode == MONOCLE ? "MONOCLE" : "GRID");
+    cairo_fill(CM->bar_cr);
 }
 
 void drawbars() {
@@ -1178,10 +1221,15 @@ static void setup_monitor(int i, int x, int y, int w, int h)
                       0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, NULL);
     xcb_map_window(dis, CM->bar_win);
 
+    /* normal xcb GC context (maybe do all drawing in cairo?) */
     CM->bar_pixmap = xcb_generate_id(dis);
     CM->bar_gc     = xcb_generate_id(dis);
     xcb_create_pixmap(dis, screen->root_depth, CM->bar_pixmap, CM->bar_win, w, PANEL_HEIGHT);
     xcb_create_gc(dis, CM->bar_gc, CM->bar_pixmap, 0, 0);
+
+    /* cairo context */
+    CM->bar_cr_s = cairo_xcb_surface_create(dis, CM->bar_win, xcb_get_root_visual_type(screen), w, PANEL_HEIGHT);
+    CM->bar_cr   = cairo_create(CM->bar_cr_s);
 
     for (int d=0; d<DESKTOPS; d++) save_desktop(d);
     change_desktop(&(Arg){.i = DEFAULT_DESKTOP});
@@ -1365,6 +1413,8 @@ void tile(void) {
 void togglepanel() {
     CM->showpanel = !CM->showpanel;
     tile();
+    if (CM->showpanel) { xcb_map_window(dis, CM->bar_win); drawbar(true); }
+    else xcb_unmap_window(dis, CM->bar_win);
 }
 
 /* windows that request to unmap should lose their
