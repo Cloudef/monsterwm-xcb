@@ -557,6 +557,8 @@ void configurerequest(xcb_generic_event_t *e) {
  * the info is a list of ':' separated values for each desktop
  * desktop to desktop info is separated by ' ' single spaces
  * the info values are
+ *   the monitor number/id
+ *   whether the monitor is the current focused (1) or not (0)
  *   the desktop number/id
  *   the desktop's client count
  *   the desktop's tiling layout mode/id
@@ -572,7 +574,7 @@ void desktopinfo(void) {
         select_monitor(m); d = 0; cd = CM->current_desktop;
         for (client *c; d<DESKTOPS; d++) {
             for (select_desktop(d), c=CM->head, n=0, urgent=false; c; c=c->next, ++n) if (c->isurgent) urgent = true;
-            fprintf(stdout, "%d:%d:%d:%d:%d:%d:%d%c", m, current_monitor == m, d, n, CM->mode, CM->current_desktop == cd, urgent, d+1==DESKTOPS?'\n':' ');
+            fprintf(stdout, "%d:%d:%d:%d:%d:%d:%d%c", m, current_monitor == OLDM, d, n, CM->mode, CM->current_desktop == cd, urgent, (m+1==MONITORS && d+1==DESKTOPS)?'\n':' ');
         }
         select_desktop(cd);
     }
