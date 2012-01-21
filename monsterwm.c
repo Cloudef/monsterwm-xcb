@@ -212,6 +212,7 @@ static void unmapnotify(xcb_generic_event_t *e);
 static client* wintoclient(xcb_window_t w);
 static int areatomonitor(int x, int y);
 static void drawbars();
+static void drawbar(bool active_monitor);
 
 #include "config.h"
 
@@ -577,6 +578,7 @@ void desktopinfo(void) {
             fprintf(stdout, "%d:%d:%d:%d:%d:%d:%d%c", m, current_monitor == OLDM, d, n, CM->mode, CM->current_desktop == cd, urgent, (m+1==MONITORS && d+1==DESKTOPS)?'\n':' ');
         }
         select_desktop(cd);
+        drawbar(m == OLDM);
     }
     fflush(stdout);
     select_monitor(OLDM);
@@ -1038,7 +1040,6 @@ void run(void) {
             else { DEBUGP("xcb: unimplented event: %d\n", ev->response_type & ~0x80); }
             free(ev);
         }
-        // drawbars();
     }
 }
 
@@ -1125,24 +1126,42 @@ int setup_keyboard(void)
     return 0;
 }
 
-static void drawbar() {
-    xcb_rectangle_t rect[] = {
+void drawbar(bool active_monitor) {
+    int offsetx = 0;
+
+    /* background */
+    xcb_rectangle_t panel_vis[] = {
         {0, 0, CM->ww + BORDER_WIDTH, PANEL_HEIGHT}, /* BG */
-        {5, 5, PANEL_HEIGHT - 10, PANEL_HEIGHT - 10},
     };
     xcb_change_gc_single(dis, CM->bar_gc, XCB_GC_FOREGROUND, xcb_get_colorpixel(BAR_BACKGROUND));
-    xcb_poly_fill_rectangle(dis, CM->bar_pixmap, CM->bar_gc, 1, rect);
+    xcb_poly_fill_rectangle(dis, CM->bar_pixmap, CM->bar_gc, 1, panel_vis);
 
-    xcb_change_gc_single(dis, CM->bar_gc, XCB_GC_FOREGROUND, xcb_get_colorpixel("#FF0000"));
-    xcb_poly_fill_rectangle(dis, CM->bar_pixmap, CM->bar_gc, 1, rect+1);
+    /* tags */
+    for (int d=0; d<DESKTOPS; d++) {
+        xcb_rectangle_t tag_vis[] = {
+            { 5 + (15 * d), 5, 10, PANEL_HEIGHT - 10 }
+        };
+        xcb_change_gc_single(dis, CM->bar_gc, XCB_GC_FOREGROUND, xcb_get_colorpixel(!active_monitor ? "#9d9d9d" : d == CM->current_desktop ? "#44ddff" : "#9d9d9d"));
+        xcb_poly_fill_rectangle(dis, CM->bar_pixmap, CM->bar_gc, 1, tag_vis);
+    }
+    offsetx = 5 + (15 * DESKTOPS);
 
+    /* layout */
+    xcb_rectangle_t layout_vis[] = {
+        { offsetx, 5, 10, PANEL_HEIGHT - 10 }
+    };
+    xcb_change_gc_single(dis, CM->bar_gc, XCB_GC_FOREGROUND, xcb_get_colorpixel(
+                CM->mode == TILE ? "#ff0000" : CM->mode == BSTACK ? "#00FF00" : CM->mode == MONOCLE ? "#000000" : "#FFFFFF" ));
+    xcb_poly_fill_rectangle(dis, CM->bar_pixmap, CM->bar_gc, 1, layout_vis);
+
+    /* render */
     xcb_copy_area(dis, CM->bar_pixmap, CM->bar_win, CM->bar_gc, 0, 0, 0, 0, CM->ww + BORDER_WIDTH, PANEL_HEIGHT);
 }
 
 void drawbars() {
     int OLDM = current_monitor;
     for (int m=0; m<MONITORS; m++)
-    { select_monitor(m); drawbar(); }
+    { select_monitor(m); drawbar(m == OLDM); }
     select_monitor(OLDM);
 }
 
