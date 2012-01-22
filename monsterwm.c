@@ -1122,7 +1122,7 @@ int setup_keyboard(void)
     return 0;
 }
 
-static void  setup_monitor(int i, int x, int y, int w, int h)
+static void setup_monitor(int i, int x, int y, int w, int h)
 {
     select_monitor(i);
     if (!(CM->desktops = calloc(DESKTOPS, sizeof(desktop)))) die("error: could not allocate memory for desktops @ monitor %d\n", i);
@@ -1271,7 +1271,7 @@ void tile(void) {
     /* count stack windows -- do not consider fullscreen or transient clients */
     for (n=0, c=CM->head->next; c; c=c->next) if (!c->istransient && !c->isfullscreen && !c->isfloating) ++n;
 
-    if (!CM->head->next || !n || (CM->head->next->istransient && !CM->head->next->next) || CM->mode == MONOCLE) {
+    if (!CM->head->next || (CM->head->next->istransient && !CM->head->next->next) || CM->mode == MONOCLE) {
         for (c=CM->head; c; c=c->next) if (!c->isfullscreen && !c->istransient && !c->isfloating)
             xcb_move_resize(dis, c->win, CM->wx + cx, CM->wy + cy, CM->ww + BORDER_WIDTH, h + BORDER_WIDTH);
     } else if (CM->mode == TILE || CM->mode == BSTACK) {
