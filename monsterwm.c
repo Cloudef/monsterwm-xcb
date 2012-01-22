@@ -21,9 +21,7 @@
 #ifndef CAIRO_HAS_XCB_SURFACE
 #  error Cairo was not compiled with XCB support
 #endif
-
 #include <cairo/cairo-xcb.h>
-//#include <cairo/cairo-xcb-xrender.h>
 
 /* TODO: Reduce SLOC */
 
@@ -118,6 +116,7 @@ typedef struct client {
     int monitor;
     bool isurgent, istransient, isfullscreen, isfloating;
     xcb_window_t win;
+    char name[255];
 } client;
 
 /* properties of each desktop
@@ -753,6 +752,7 @@ void maprequest(xcb_generic_event_t *e) {
     xcb_icccm_get_wm_class_reply_t     ch;
     xcb_get_geometry_reply_t           *geometry;
     xcb_get_property_reply_t           *prop_reply;
+    xcb_icccm_get_text_property_reply_t text_reply;
 
     DEBUG("xcb: map request");
     xcb_get_attributes(windows, attr, 1);
@@ -760,7 +760,7 @@ void maprequest(xcb_generic_event_t *e) {
     if (wintoclient(ev->window))    return;
     DEBUG("xcb: manage");
 
-    bool follow = false, floating = false;
+    bool follow = false, floating = false; char name[255];
     int cd = CM->current_desktop, newdsk = CM->current_desktop;
     if (xcb_icccm_get_wm_class_reply(dis, xcb_icccm_get_wm_class(dis, ev->window), &ch, NULL)) { /* TODO: error handling */
         DEBUGP("class: %s instance: %s\n", ch.class_name, ch.instance_name);
@@ -781,9 +781,15 @@ void maprequest(xcb_generic_event_t *e) {
         free(geometry);
     }
 
+    if (xcb_icccm_get_wm_name_reply(dis, xcb_icccm_get_wm_name_unchecked(dis, ev->window), &text_reply, NULL)) { /* TODO: error handling */
+        strncpy(name, text_reply.name, 254);
+        xcb_icccm_get_text_property_reply_wipe(&text_reply);
+    } else strncpy(name, "broken", 254);
+
     select_desktop(newdsk);
     CM->prevfocus = CM->current;
     CM->current   = addwindow(ev->window);
+    strcpy(CM->current->name, name);
 
     xcb_icccm_get_wm_transient_for_reply(dis, xcb_icccm_get_wm_transient_for_unchecked(dis, ev->window), &transient, NULL); /* TODO: error handling */
     CM->current->istransient = transient?true:false;
@@ -824,8 +830,9 @@ void maprequest(xcb_generic_event_t *e) {
  */
 void mousemotion(const Arg *arg) {
     if (!CM->current) return;
-    xcb_get_geometry_reply_t           *geometry;
-   xcb_query_pointer_reply_t          *pointer;
+    xcb_get_geometry_reply_t  *geometry;
+    xcb_query_pointer_reply_t *pointer;
+    xcb_grab_pointer_reply_t  *grab_reply;
     int mx, my, winx, winy, winw, winh, xw, yh;
     xcb_window_t window = CM->current->win;
 
@@ -836,19 +843,22 @@ void mousemotion(const Arg *arg) {
         free(geometry);
     } else return;
 
-    xcb_grab_pointer(dis, 0, CM->current->win, BUTTONMASK|XCB_EVENT_MASK_BUTTON_MOTION|XCB_EVENT_MASK_POINTER_MOTION,
-            XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, screen->root, XCB_NONE, XCB_CURRENT_TIME);
+    grab_reply = xcb_grab_pointer_reply(dis, xcb_grab_pointer(dis, 0, window, BUTTONMASK|XCB_EVENT_MASK_BUTTON_MOTION|XCB_EVENT_MASK_POINTER_MOTION,
+            XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, screen->root, XCB_NONE, XCB_CURRENT_TIME), NULL);
+    if (!grab_reply) return;
+    if (grab_reply->status != XCB_GRAB_STATUS_SUCCESS) return;
 
     pointer = xcb_query_pointer_reply(dis, xcb_query_pointer(dis, screen->root), 0);
     if (!pointer) return;
     mx = pointer->root_x; my = pointer->root_y;
     xcb_flush(dis);
 
-    xcb_generic_event_t *e;
+    xcb_generic_event_t *e = NULL;
     xcb_motion_notify_event_t *ev = NULL;
-    int area_monitor;
+    int area_monitor; bool ungrab = false;
     do {
-        while(!(e = xcb_wait_for_event(dis)));
+        if (e) free(e); xcb_flush(dis);
+        while(!(e = xcb_wait_for_event(dis))) xcb_flush(dis);
         switch (e->response_type & ~0x80) {
             case XCB_CONFIGURE_REQUEST:
             case XCB_MAP_REQUEST:
@@ -866,14 +876,20 @@ void mousemotion(const Arg *arg) {
                         removeclient(CM->current);
                         change_monitor(&(Arg){.i = area_monitor});
                         update_current(addwindow(window));
+                        CM->current->isfloating = true;
                     }
                 }
                 drawbars();
-                xcb_flush(dis);
+                break;
+            case XCB_KEY_PRESS:
+            case XCB_KEY_RELEASE:
+            case XCB_BUTTON_PRESS:
+            case XCB_BUTTON_RELEASE:
+                ungrab = true;
                 break;
         }
         CM->current->isfloating = true;
-    } while((e->response_type & ~0x80) != XCB_BUTTON_RELEASE);
+    } while(!ungrab && CM->current);
     DEBUG("ungrab");
     xcb_ungrab_pointer(dis, XCB_CURRENT_TIME);
     tile();
@@ -1021,7 +1037,7 @@ void removeclient(client *c) {
     client **p = NULL;
     int OLDM = current_monitor;
     select_monitor(c->monitor);
-    DEBUGP("remove monitor: %d\n", c->monitor);
+    DEBUGP("xcb: remove monitor: %d\n", c->monitor);
     int nd = 0, cd = CM->current_desktop;
     for (bool found = false; nd<DESKTOPS && !found; nd++)
         for (select_desktop(nd), p = &CM->head; *p && !(found = *p == c); p = &(*p)->next);
@@ -1032,8 +1048,10 @@ void removeclient(client *c) {
     if (CM->mode == MONOCLE && cd == --nd && CM->current) xcb_map_window(dis, CM->current->win);
     update_current(CM->current);
     free(c);
-    select_monitor(OLDM);
-    update_current(CM->current);
+    if (OLDM != current_monitor) {
+       select_monitor(OLDM);
+       update_current(CM->current);
+    }
 }
 
 /* resize the master window - check for boundary size limits
@@ -1185,20 +1203,61 @@ void drawbar(bool active_monitor) {
     xcb_change_gc_single(dis, CM->bar_gc, XCB_GC_FOREGROUND, xcb_get_colorpixel(
                 CM->mode == TILE ? "#ff0000" : CM->mode == BSTACK ? "#00FF00" : CM->mode == MONOCLE ? "#000000" : "#FFFFFF" ));
     xcb_poly_fill_rectangle(dis, CM->bar_pixmap, CM->bar_gc, 1, layout_vis);
-    offsetx += 20;
+    offsetx += 15;
 
     /* render */
     xcb_copy_area(dis, CM->bar_pixmap, CM->bar_win, CM->bar_gc, 0, 0, 0, 0, CM->ww + BORDER_WIDTH, PANEL_HEIGHT);
 
-    cairo_text_extents_t te;
     /* cairo draw */
+    cairo_text_extents_t te;
+    const char *text = CM->mode == TILE ? "東方Project" : CM->mode == BSTACK ? "BSTACK" : CM->mode == MONOCLE ? "MONOCLE" : "GRID";
     cairo_set_source_rgba(CM->bar_cr,1,1,1,1);
-    cairo_select_font_face (CM->bar_cr, "Erusfont", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+    cairo_select_font_face (CM->bar_cr, "IPAMonaGothic", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
     cairo_set_font_size(CM->bar_cr, 12);
-    cairo_text_extents(CM->bar_cr, "a", &te);
-    cairo_move_to(CM->bar_cr, offsetx - te.width / 2 - te.x_bearing, PANEL_HEIGHT / 2 - te.height / 2 - te.y_bearing);
-    cairo_show_text(CM->bar_cr, CM->mode == TILE ? "TILE" : CM->mode == BSTACK ? "BSTACK" : CM->mode == MONOCLE ? "MONOCLE" : "GRID");
-    cairo_fill(CM->bar_cr);
+    cairo_text_extents(CM->bar_cr, text, &te);
+    cairo_move_to(CM->bar_cr, offsetx - te.x_bearing, PANEL_HEIGHT / 2 - te.height / 2 - te.y_bearing);
+    cairo_show_text(CM->bar_cr, text);
+    offsetx += 5 + te.width;
+
+    /* get client count */
+    int n = 0;
+    for (client *c=CM->head; c; c=c->next) ++n;
+    if (!n) return;
+
+    /* get total width of clients */
+    int client_width = 0, client_area = (CM->ww + BORDER_WIDTH) - offsetx;
+    int i = 0, extra = 0, tw = 0, mw = client_area / n;
+    for (client *c=CM->head; c; c=c->next) {
+        cairo_text_extents(CM->bar_cr, c->name, &te);
+        tw = 5 + te.width;
+        if (tw < mw) extra += (mw - tw); else i++;
+    }
+    if (i > 0) mw += extra / i;
+
+    /* draw clients */
+    char name[255]; bool bar_full = false;
+    for (client *c=CM->head; c; c=c->next) {
+        unsigned int gap = 0;
+        while (5 + te.width > mw || !te.width && strlen(c->name)) {
+            strcpy(name, c->name);
+            if (gap && gap+3<=strlen(c->name)) {
+                for (int i=1; i<4; ++i) name[strlen(c->name) - gap - i] = '.';
+                name[strlen(c->name) - gap] = 0;
+            }
+            cairo_text_extents(CM->bar_cr, name, &te);
+            if ((bar_full = (++gap >= strlen(c->name) - 2)))
+            { c = CM->current; snprintf(name, 254, "%s [ + %d other clients ]", c->name, n-1); break; }
+        }
+
+        if (c == CM->current) cairo_set_source_rgb(CM->bar_cr,0,0,1);
+        else cairo_set_source_rgb(CM->bar_cr,0.2,0.2,0.2);
+
+        cairo_text_extents(CM->bar_cr, name, &te);
+        cairo_move_to(CM->bar_cr, offsetx - te.x_bearing, PANEL_HEIGHT / 2 - te.height / 2 - te.y_bearing);
+        cairo_show_text(CM->bar_cr, name);
+        offsetx += 5 + te.width; te.width = 0;
+        if (bar_full) break;
+    }
 }
 
 void drawbars() {
@@ -1370,7 +1429,7 @@ void tile(void) {
     /* count stack windows -- do not consider fullscreen or transient clients */
     for (n=0, c=CM->head->next; c; c=c->next) if (!c->istransient && !c->isfullscreen && !c->isfloating) ++n;
 
-    if (!CM->head->next || (CM->head->next->istransient && !CM->head->next->next) || CM->mode == MONOCLE) {
+    if (!CM->head->next || !n || (CM->head->next->istransient && !CM->head->next->next) || CM->mode == MONOCLE) {
         for (c=CM->head; c; c=c->next) if (!c->isfullscreen && !c->istransient && !c->isfloating)
             xcb_move_resize(dis, c->win, CM->wx + cx, CM->wy + cy, CM->ww + BORDER_WIDTH, h + BORDER_WIDTH);
     } else if (CM->mode == TILE || CM->mode == BSTACK) {
@@ -1457,6 +1516,8 @@ void update_current(client *c) {
         xcb_ungrab_button(dis, XCB_BUTTON_INDEX_1, CM->current->win, XCB_BUTTON_MASK_ANY);
         grabbuttons(CM->current);
     }
+
+    drawbar(true);
 }
 
 /* find to which client the given window belongs to */

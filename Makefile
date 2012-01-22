@@ -11,16 +11,25 @@ INCS = -I. -I/usr/include
 LIBS = -L/usr/lib -lc `pkg-config --libs xcb xcb-icccm xcb-keysyms cairo`
 
 CPPFLAGS = -DVERSION=\"${VERSION}\" -DWMNAME=\"${WMNAME}\"
-CFLAGS   = -std=c99 -pedantic -Wall -Wextra -Os ${INCS} ${CPPFLAGS}
-LDFLAGS  = -s ${LIBS}
+CFLAGS   = -std=c99 -pedantic -Wall -Wextra ${INCS} ${CPPFLAGS}
+LDFLAGS  = ${LIBS}
 
 XINERAMA = 1
+DEBUG	 = 1
 
 CC 	 = cc
 EXEC = ${WMNAME}
 
 SRC = ${WMNAME}.c
 OBJ = ${SRC:.c=.o}
+
+ifeq (${DEBUG},0)
+   CFLAGS  += -Os
+   LDFLAGS += -s
+else
+   CFLAGS  += -g
+   LDFLAGS += -g
+endif
 
 ifeq (${XINERAMA},1)
    LDFLAGS += -lxcb-xinerama
