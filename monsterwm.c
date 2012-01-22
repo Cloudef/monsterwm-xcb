@@ -1201,7 +1201,7 @@ void drawbar(bool active_monitor) {
         { offsetx, 5, 10, PANEL_HEIGHT - 10 }
     };
     xcb_change_gc_single(dis, CM->bar_gc, XCB_GC_FOREGROUND, xcb_get_colorpixel(
-                CM->mode == TILE ? "#ff0000" : CM->mode == BSTACK ? "#00FF00" : CM->mode == MONOCLE ? "#000000" : "#FFFFFF" ));
+                CM->mode == TILE ? "#ff0000" : CM->mode == BSTACK ? "#00FF00" : CM->mode == MONOCLE ? "#000000" : "#FFFFFF"));
     xcb_poly_fill_rectangle(dis, CM->bar_pixmap, CM->bar_gc, 1, layout_vis);
     offsetx += 15;
 
@@ -1210,9 +1210,10 @@ void drawbar(bool active_monitor) {
 
     /* cairo draw */
     cairo_text_extents_t te;
-    const char *text = CM->mode == TILE ? "東方Project" : CM->mode == BSTACK ? "BSTACK" : CM->mode == MONOCLE ? "MONOCLE" : "GRID";
-    cairo_set_source_rgba(CM->bar_cr,1,1,1,1);
-    cairo_select_font_face (CM->bar_cr, "IPAMonaGothic", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+    unsigned int rgb = xcb_get_colorpixel(CM->mode == TILE ? "#ff0000" : CM->mode == BSTACK ? "#00FF00" : CM->mode == MONOCLE ? "#000000" : "#FFFFFF");
+    const char *text = CM->mode == TILE ? "TILE" : CM->mode == BSTACK ? "BSTACK" : CM->mode == MONOCLE ? "MONOCLE" : "GRID";
+    cairo_set_source_rgb(CM->bar_cr, (double)((rgb >> 16) / 255.0), (double)((rgb >> 8 & 0xFF) / 255.0), (double)((rgb & 0xFF) / 255.0));
+    cairo_select_font_face (CM->bar_cr, "Erufont", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
     cairo_set_font_size(CM->bar_cr, 12);
     cairo_text_extents(CM->bar_cr, text, &te);
     cairo_move_to(CM->bar_cr, offsetx - te.x_bearing, PANEL_HEIGHT / 2 - te.height / 2 - te.y_bearing);
@@ -1237,9 +1238,9 @@ void drawbar(bool active_monitor) {
     /* draw clients */
     char name[255]; bool bar_full = false;
     for (client *c=CM->head; c; c=c->next) {
-        unsigned int gap = 0;
-        while (5 + te.width > mw || !te.width && strlen(c->name)) {
-            strcpy(name, c->name);
+        unsigned int gap = 0; bool get_gap = true;
+        while ((te.width && 5 + te.width > mw) || get_gap) {
+            strcpy(name, c->name); get_gap = false;
             if (gap && gap+3<=strlen(c->name)) {
                 for (int i=1; i<4; ++i) name[strlen(c->name) - gap - i] = '.';
                 name[strlen(c->name) - gap] = 0;
@@ -1249,8 +1250,8 @@ void drawbar(bool active_monitor) {
             { c = CM->current; snprintf(name, 254, "%s [ + %d other clients ]", c->name, n-1); break; }
         }
 
-        if (c == CM->current) cairo_set_source_rgb(CM->bar_cr,0,0,1);
-        else cairo_set_source_rgb(CM->bar_cr,0.2,0.2,0.2);
+        rgb = xcb_get_colorpixel(c == CM->current ? "#44ddff" : "#9d9d9d");
+        cairo_set_source_rgb(CM->bar_cr, (double)((rgb >> 16) / 255.0), (double)((rgb >> 8 & 0xFF) / 255.0), (double)((rgb & 0xFF) / 255.0));
 
         cairo_text_extents(CM->bar_cr, name, &te);
         cairo_move_to(CM->bar_cr, offsetx - te.x_bearing, PANEL_HEIGHT / 2 - te.height / 2 - te.y_bearing);

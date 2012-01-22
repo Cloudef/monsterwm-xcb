@@ -18,8 +18,8 @@
 #define ATTACH_ASIDE    True      /* False means new window is master */
 #define FOLLOW_MOUSE    False     /* Focus the window the mouse just entered */
 #define FOLLOW_WINDOW   False     /* Follow the window when moved to a different desktop */
-#define FOLLOW_MONITOR  True      /* Active monitor if mouse is there */
-#define CLICK_TO_FOCUS  True      /* Focus an unfocused window when clicked */
+#define FOLLOW_MONITOR  False     /* Active monitor if mouse is there */
+#define CLICK_TO_FOCUS  False     /* Focus an unfocused window when clicked */
 #define BORDER_WIDTH    2         /* window border width */
 #define FOCUS           "#ff950e" /* focused window border color   */
 #define UNFOCUS         "#444444" /* unfocused window border color */
