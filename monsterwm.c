@@ -780,8 +780,9 @@ void maprequest(xcb_generic_event_t *e) {
  */
 void mousemotion(const Arg *arg) {
     if (!CM->current) return;
-    xcb_get_geometry_reply_t           *geometry;
-   xcb_query_pointer_reply_t          *pointer;
+    xcb_get_geometry_reply_t  *geometry;
+    xcb_query_pointer_reply_t *pointer;
+    xcb_grab_pointer_reply_t  *grab_reply;
     int mx, my, winx, winy, winw, winh, xw, yh;
     xcb_window_t window = CM->current->win;
 
@@ -792,19 +793,22 @@ void mousemotion(const Arg *arg) {
         free(geometry);
     } else return;
 
-    xcb_grab_pointer(dis, 0, CM->current->win, BUTTONMASK|XCB_EVENT_MASK_BUTTON_MOTION|XCB_EVENT_MASK_POINTER_MOTION,
-            XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, screen->root, XCB_NONE, XCB_CURRENT_TIME);
+    grab_reply = xcb_grab_pointer_reply(dis, xcb_grab_pointer(dis, 0, window, BUTTONMASK|XCB_EVENT_MASK_BUTTON_MOTION|XCB_EVENT_MASK_POINTER_MOTION,
+            XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, screen->root, XCB_NONE, XCB_CURRENT_TIME), NULL);
+    if (!grab_reply) return;
+    if (grab_reply->status != XCB_GRAB_STATUS_SUCCESS) return;
 
     pointer = xcb_query_pointer_reply(dis, xcb_query_pointer(dis, screen->root), 0);
     if (!pointer) return;
     mx = pointer->root_x; my = pointer->root_y;
     xcb_flush(dis);
 
-    xcb_generic_event_t *e;
+    xcb_generic_event_t *e = NULL;
     xcb_motion_notify_event_t *ev = NULL;
-    int area_monitor;
+    int area_monitor; bool ungrab = false;
     do {
-        while(!(e = xcb_wait_for_event(dis)));
+        if (e) free(e); xcb_flush(dis);
+        while(!(e = xcb_wait_for_event(dis))) xcb_flush(dis);
         switch (e->response_type & ~0x80) {
             case XCB_CONFIGURE_REQUEST:
             case XCB_MAP_REQUEST:
@@ -826,10 +830,16 @@ void mousemotion(const Arg *arg) {
                 }
                 xcb_flush(dis);
                 break;
+            case XCB_KEY_PRESS:
+            case XCB_KEY_RELEASE:
+            case XCB_BUTTON_PRESS:
+            case XCB_BUTTON_RELEASE:
+                ungrab = true;
+
         }
         CM->current->isfloating = true;
-    } while((e->response_type & ~0x80) != XCB_BUTTON_RELEASE);
-    DEBUG("ungrab");
+    } while(!ungrab && CM->current);
+    DEBUG("xcb: ungrab");
     xcb_ungrab_pointer(dis, XCB_CURRENT_TIME);
     tile();
 }
@@ -1261,7 +1271,7 @@ void tile(void) {
     /* count stack windows -- do not consider fullscreen or transient clients */
     for (n=0, c=CM->head->next; c; c=c->next) if (!c->istransient && !c->isfullscreen && !c->isfloating) ++n;
 
-    if (!CM->head->next || (CM->head->next->istransient && !CM->head->next->next) || CM->mode == MONOCLE) {
+    if (!CM->head->next || !n || (CM->head->next->istransient && !CM->head->next->next) || CM->mode == MONOCLE) {
         for (c=CM->head; c; c=c->next) if (!c->isfullscreen && !c->istransient && !c->isfloating)
             xcb_move_resize(dis, c->win, CM->wx + cx, CM->wy + cy, CM->ww + BORDER_WIDTH, h + BORDER_WIDTH);
     } else if (CM->mode == TILE || CM->mode == BSTACK) {

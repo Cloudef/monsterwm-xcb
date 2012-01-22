@@ -15,12 +15,21 @@ CFLAGS   = -std=c99 -pedantic -Wall -Wextra -Os ${INCS} ${CPPFLAGS}
 LDFLAGS  = -s ${LIBS}
 
 XINERAMA = 1
+DEBUG 	 = 0
 
 CC 	 = cc
 EXEC = ${WMNAME}
 
 SRC = ${WMNAME}.c
 OBJ = ${SRC:.c=.o}
+
+ifeq (${DEBUG},0)
+   CFLAGS  += -Os
+   LDFLAGS += -s
+else
+   CFLAGS  += -g
+   LDFLAGS += -g
+endif
 
 ifeq (${XINERAMA},1)
    LDFLAGS += -lxcb-xinerama
