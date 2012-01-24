@@ -49,6 +49,10 @@ static const char *dmenucmd[] = { "dmenu", NULL };
     {  MOD1,             K,              change_desktop, {.i = N}}, \
     {  MOD1|ShiftMask,   K,              client_to_desktop, {.i = N}},
 
+#define MONITORCHANGE(K,N) \
+    {  MOD4,             K,              change_monitor, {.i = N}}, \
+    {  MOD4|ShiftMask,   K,              client_to_monitor, {.i = N}},
+
 /** Shortcuts **/
 static key keys[] = {
     /* modifier          key            function           argument */
@@ -82,6 +86,7 @@ static key keys[] = {
        DESKTOPCHANGE(    XK_F2,                             1)
        DESKTOPCHANGE(    XK_F3,                             2)
        DESKTOPCHANGE(    XK_F4,                             3)
+       MONITORCHANGE(    XK_F1,                             0)
 };
 
 static Button buttons[] = {
