@@ -1220,13 +1220,20 @@ void drawbar(bool active_monitor) {
     cairo_show_text(CM->bar_cr, text);
     offsetx += 5 + te.width;
 
+    /* draw status */
+    rgb = xcb_get_colorpixel("#9d9d9d");
+    cairo_set_source_rgb(CM->bar_cr, (double)((rgb >> 16) / 255.0), (double)((rgb >> 8 & 0xFF) / 255.0), (double)((rgb & 0xFF) / 255.0));
+    cairo_text_extents(CM->bar_cr, "Yay! Status...", &te);
+    cairo_move_to(CM->bar_cr, (CM->ww + BORDER_WIDTH) - te.width - te.x_bearing - 5, PANEL_HEIGHT / 2 - te.height / 2 - te.y_bearing);
+    cairo_show_text(CM->bar_cr, "Yay! Status...");
+
     /* get client count */
     int n = 0;
     for (client *c=CM->head; c; c=c->next) ++n;
     if (!n) return;
 
     /* get total width of clients */
-    int client_width = 0, client_area = (CM->ww + BORDER_WIDTH) - offsetx;
+    int client_area = (CM->ww + BORDER_WIDTH) - offsetx - te.width - 10;
     int i = 0, extra = 0, tw = 0, mw = client_area / n;
     for (client *c=CM->head; c; c=c->next) {
         cairo_text_extents(CM->bar_cr, c->name, &te);
