@@ -49,11 +49,8 @@ static char *NET_ATOM_NAME[]  = { "_NET_SUPPORTED", "_NET_WM_STATE_FULLSCREEN", 
 #define CLEANMASK(mask) (mask & ~(numlockmask | XCB_MOD_MASK_LOCK))
 #define BUTTONMASK      XCB_EVENT_MASK_BUTTON_PRESS|XCB_EVENT_MASK_BUTTON_RELEASE
 
-/* mouse motion actions */
 enum { RESIZE, MOVE };
-/* tiling layout modes */
 enum { TILE, MONOCLE, BSTACK, GRID, MODES };
-/* wm and net atoms selected through wmatoms and netatoms arrays */
 enum { WM_PROTOCOLS, WM_DELETE_WINDOW, WM_COUNT };
 enum { NET_SUPPORTED, NET_FULLSCREEN, NET_WM_STATE, NET_ACTIVE, NET_COUNT };
 
@@ -153,7 +150,7 @@ typedef struct {
     const bool floating;
 } AppRule;
 
-/* Functions */
+ /* function prototypes sorted alphabetically */
 static client* addwindow(xcb_window_t w);
 static void buttonpress(xcb_generic_event_t *e);
 static void change_monitor(const Arg *arg);
@@ -555,10 +552,10 @@ void configurerequest(xcb_generic_event_t *e) {
         xcb_configure_window(dis, ev->window, ev->value_mask, v);
     }
     tile();
-    update_current(c?c:CM->current);
+    if (c && c == CM->current) update_current(c);
 }
 
-/* send the given event - WM_DELETE_WINDOW for now */
+/* close the window */
 void deletewindow(xcb_window_t w) {
     xcb_client_message_event_t ev;
     ev.response_type = XCB_CLIENT_MESSAGE;
@@ -712,7 +709,6 @@ void grid(int hh, int cy) {
 void keypress(xcb_generic_event_t *e) {
     xcb_key_press_event_t *ev       = (xcb_key_press_event_t *)e;
     xcb_keysym_t           keysym   = xcb_get_keysym(ev->detail);
-
     DEBUGP("xcb: keypress: code: %d mod: %d\n", ev->detail, ev->state);
     for (unsigned int i=0; i<LENGTH(keys); i++)
         if (keysym == keys[i].keysym && CLEANMASK(keys[i].mod) == CLEANMASK(ev->state) && keys[i].func)
@@ -834,18 +830,20 @@ void mousemotion(const Arg *arg) {
     xcb_grab_pointer_reply_t  *grab_reply;
     int mx, my, winx, winy, winw, winh, xw, yh;
 
-    grab_reply = xcb_grab_pointer_reply(dis, xcb_grab_pointer(dis, 0, screen->root, BUTTONMASK|XCB_EVENT_MASK_BUTTON_MOTION|XCB_EVENT_MASK_POINTER_MOTION,
-            XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, XCB_NONE, XCB_NONE, XCB_CURRENT_TIME), NULL);
-    if (!grab_reply || grab_reply->status != XCB_GRAB_STATUS_SUCCESS) return;
-    pointer = xcb_query_pointer_reply(dis, xcb_query_pointer(dis, screen->root), 0); if (!pointer) return;
-    mx = pointer->root_x; my = pointer->root_y;
-
     geometry = xcb_get_geometry_reply(dis, xcb_get_geometry(dis, CM->current->win), NULL); /* TODO: error handling */
     if (geometry) {
         winx = geometry->x;     winy = geometry->y;
         winw = geometry->width; winh = geometry->height;
         free(geometry);
     } else return;
+
+    pointer = xcb_query_pointer_reply(dis, xcb_query_pointer(dis, screen->root), 0);
+    if (!pointer) return;
+    mx = pointer->root_x; my = pointer->root_y;
+
+    grab_reply = xcb_grab_pointer_reply(dis, xcb_grab_pointer(dis, 0, screen->root, BUTTONMASK|XCB_EVENT_MASK_BUTTON_MOTION|XCB_EVENT_MASK_POINTER_MOTION,
+            XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, XCB_NONE, XCB_NONE, XCB_CURRENT_TIME), NULL);
+    if (!grab_reply || grab_reply->status != XCB_GRAB_STATUS_SUCCESS) return;
 
     xcb_generic_event_t *e = NULL;
     xcb_motion_notify_event_t *ev = NULL;
@@ -862,7 +860,7 @@ void mousemotion(const Arg *arg) {
                 ev = (xcb_motion_notify_event_t*)e;
                 xw = (arg->i == MOVE ? winx : winw) + ev->root_x - mx;
                 yh = (arg->i == MOVE ? winy : winh) + ev->root_y - my;
-                if (arg->i == RESIZE) xcb_resize(dis, CM->current->win, xw>MINWSZ?xw:MINWSZ, yh>MINWSZ?yh:MINWSZ);
+                if (arg->i == RESIZE) xcb_resize(dis, CM->current->win, xw>MINWSZ?xw:winw, yh>MINWSZ?yh:winh);
                 else if (arg->i == MOVE) {
                     xcb_move(dis, CM->current->win, xw, yh);
                     if ((area_monitor = areatomonitor(xw, yh)) != current_monitor) {
@@ -1123,9 +1121,9 @@ void select_desktop(int i) {
 /* set or unset fullscreen state of client */
 void setfullscreen(client *c, bool fullscrn) {
     DEBUGP("xcb: set fullscreen: %d\n", fullscrn);
-    long data[] = { (c->isfullscrn = fullscrn) ? netatoms[NET_FULLSCREEN] : XCB_NONE };
+    long data[] = { fullscrn ? netatoms[NET_FULLSCREEN] : XCB_NONE };
     if (fullscrn != c->isfullscrn) xcb_change_property(dis, XCB_PROP_MODE_REPLACE, c->win, netatoms[NET_WM_STATE], XCB_ATOM_ATOM, 32, fullscrn, data);
-    if (c->isfullscrn) xcb_move_resize(dis, c->win, CM->wx, CM->wy, CM->ww + BORDER_WIDTH, CM->wh + BORDER_WIDTH + PANEL_HEIGHT);
+    if ((c->isfullscrn = fullscrn)) xcb_move_resize(dis, c->win, CM->wx, CM->wy, CM->ww+BORDER_WIDTH, CM->wh+BORDER_WIDTH+PANEL_HEIGHT);
 }
 
 /* get numlock modifier using xcb */
@@ -1291,7 +1289,7 @@ void stack(int hh, int cy) {
      *      |   |    |   |                          |
      *      |   |----|   }--> screen height - hh  --'
      *      |   |    | }-|--> client height - z       :: 2 stack clients on tile mode ..looks like a spaceship
-     *      ----------  -'                            :: peice of aart by c00kiemon5ter o.O om nom nom nom nom
+     *      ----------  -'                            :: piece of aart by c00kiemon5ter o.O om nom nom nom nom
      *
      *     what we do is, remove the growth from the screen height  : (z - growth)
      *     and then divide that space with the windows on the stack : (z - growth)/n
@@ -1356,7 +1354,8 @@ void switch_mode(const Arg *arg) {
 /* tile all windows of current desktop - call the handler tiling function */
 void tile(void) {
     if (!CM->head) return; /* nothing to arange */
-    layout[CM->head->next?CM->mode:MONOCLE](CM->wh + (CM->showpanel ? 0 : PANEL_HEIGHT), (TOP_PANEL && CM->showpanel ? PANEL_HEIGHT : 0));
+    layout[CM->head->next ? CM->mode : MONOCLE](CM->wh + (CM->showpanel ? 0 : PANEL_HEIGHT),
+                                          (TOP_PANEL && CM->showpanel ? PANEL_HEIGHT : 0));
 }
 
 /* toggle visibility state of the panel */
