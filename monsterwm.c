@@ -696,11 +696,11 @@ void grid(int hh, int cy) {
     for (cols=0; cols <= n/2; cols++) if (cols*cols >= n) break; /* emulate square root */
     if (n == 5) cols = 2;
 
-    int rows = n/cols, cw = (cols ? CM->ww/cols : CM->ww), cn = 0, rn = 0, i = 0;
+    int rows = n/cols, cn = 0, rn = 0, i = 0, ch = hh - BORDER_WIDTH, cw = (CM->ww - BORDER_WIDTH)/(cols?cols:1);
     for (client *c=CM->head; c; c=c->next, i++) {
         if (c->isfullscrn || c->istransient || c->isfloating) { i--; continue; }
         if (i/rows + 1 > cols - n%cols) rows = n/cols + 1;
-        xcb_move_resize(dis, c->win, CM->wx + cn*cw, CM->wy + cy + rn*hh/rows, cw - BORDER_WIDTH, hh/rows - BORDER_WIDTH);
+        xcb_move_resize(dis, c->win, CM->wx + cn*cw, CM->wy + cy + rn*ch/rows, cw - BORDER_WIDTH, ch/rows - BORDER_WIDTH);
         if (++rn >= rows) { rn = 0; cn++; }
     }
 }
@@ -824,12 +824,12 @@ void maprequest(xcb_generic_event_t *e) {
  * Once a window has been moved or resized, it's marked as floating.
  */
 void mousemotion(const Arg *arg) {
-    if (!CM->current) return;
     xcb_get_geometry_reply_t  *geometry;
     xcb_query_pointer_reply_t *pointer;
     xcb_grab_pointer_reply_t  *grab_reply;
     int mx, my, winx, winy, winw, winh, xw, yh;
 
+    if (!CM->current) return;
     geometry = xcb_get_geometry_reply(dis, xcb_get_geometry(dis, CM->current->win), NULL); /* TODO: error handling */
     if (geometry) {
         winx = geometry->x;     winy = geometry->y;
@@ -852,8 +852,7 @@ void mousemotion(const Arg *arg) {
         if (e) free(e); xcb_flush(dis);
         while(!(e = xcb_wait_for_event(dis))) xcb_flush(dis);
         switch (e->response_type & ~0x80) {
-            case XCB_CONFIGURE_REQUEST:
-            case XCB_MAP_REQUEST:
+            case XCB_CONFIGURE_REQUEST: case XCB_MAP_REQUEST:
                 events[e->response_type & ~0x80](e);
                 break;
             case XCB_MOTION_NOTIFY:
@@ -887,7 +886,7 @@ void mousemotion(const Arg *arg) {
 /* each window should cover all the available screen space */
 void monocle(int hh, int cy) {
     for (client *c=CM->head; c; c=c->next) if (!c->isfullscrn && !c->isfloating && !c->istransient)
-        xcb_move_resize(dis, c->win, CM->wx, CM->wy + cy, CM->ww + BORDER_WIDTH, hh + BORDER_WIDTH);
+        xcb_move_resize(dis, c->win, CM->wx, CM->wy + cy, CM->ww, hh);
 }
 
 /* move the current client, to current->next
@@ -1123,7 +1122,7 @@ void setfullscreen(client *c, bool fullscrn) {
     DEBUGP("xcb: set fullscreen: %d\n", fullscrn);
     long data[] = { fullscrn ? netatoms[NET_FULLSCREEN] : XCB_NONE };
     if (fullscrn != c->isfullscrn) xcb_change_property(dis, XCB_PROP_MODE_REPLACE, c->win, netatoms[NET_WM_STATE], XCB_ATOM_ATOM, 32, fullscrn, data);
-    if ((c->isfullscrn = fullscrn)) xcb_move_resize(dis, c->win, CM->wx, CM->wy, CM->ww+BORDER_WIDTH, CM->wh+BORDER_WIDTH+PANEL_HEIGHT);
+    if ((c->isfullscrn = fullscrn)) xcb_move_resize(dis, c->win, CM->wx, CM->wy, CM->ww, CM->wh + PANEL_HEIGHT);
 }
 
 /* get numlock modifier using xcb */
@@ -1200,8 +1199,8 @@ int setup(int default_screen) {
     if (xinerama_iter.rem) {
         for (int i=0; xinerama_iter.rem; xcb_xinerama_screen_info_next(&xinerama_iter)) {
             setup_monitor(i++, xinerama_iter.data->x_org, xinerama_iter.data->y_org,
-                          xinerama_iter.data->width - BORDER_WIDTH,
-                          xinerama_iter.data->height - (SHOW_PANEL ? PANEL_HEIGHT : 0) - BORDER_WIDTH);
+                          xinerama_iter.data->width,
+                          xinerama_iter.data->height - (SHOW_PANEL ? PANEL_HEIGHT : 0));
         }
     } else
 #endif /* XINERAMA */
@@ -1303,23 +1302,25 @@ void stack(int hh, int cy) {
      *     on the bottom of the screen.
      */
     if (c && n < 1) {
-        xcb_move_resize(dis, c->win, CM->wx + cx, CM->wy + cy, CM->ww - BORDER_WIDTH, hh - BORDER_WIDTH);
+        xcb_move_resize(dis, c->win, CM->wx + cx, CM->wy + cy, CM->ww - 2*BORDER_WIDTH, hh - 2*BORDER_WIDTH);
         return;
     } else if (c && n > 1) { d = (z - CM->growth) % n + CM->growth; z = (z - CM->growth) / n; }
 
     /* tile the first non-floating, non-fullscreen window to cover the master area */
-    if (c) (CM->mode == BSTACK) ? xcb_move_resize(dis, c->win, CM->wx + cx, CM->wy + cy, CM->ww - BORDER_WIDTH, CM->master_size - BORDER_WIDTH)
-                            : xcb_move_resize(dis, c->win, CM->wx + cx, CM->wy + cy, CM->master_size - BORDER_WIDTH, hh - BORDER_WIDTH);
+    if (c) (CM->mode == BSTACK) ? xcb_move_resize(dis, c->win, CM->wx + cx, CM->wy + cy, CM->ww - 2*BORDER_WIDTH, CM->master_size - BORDER_WIDTH)
+                                : xcb_move_resize(dis, c->win, CM->wx + cx, CM->wy + cy, CM->master_size - BORDER_WIDTH, hh - 2*BORDER_WIDTH);
 
     /* tile the next non-floating, non-fullscreen stack window with growth/d */
     if (c) for (c=c->next; c && (c->isfullscrn || c->isfloating || c->istransient); c=c->next);
     if (c) (CM->mode == BSTACK) ? xcb_move_resize(dis, c->win, CM->wx + cx, CM->wy + (cy += CM->master_size),
-                            (cw = z - BORDER_WIDTH) + d, (ch = hh - CM->master_size - BORDER_WIDTH))
+                              (cw =  z - BORDER_WIDTH)  - BORDER_WIDTH + d,
+                              (ch = hh - BORDER_WIDTH*2 - CM->master_size))
                             : xcb_move_resize(dis, c->win, CM->wx + (cx += CM->master_size), CM->wy + cy,
-                            (cw = CM->ww - CM->master_size - BORDER_WIDTH), (ch = z - BORDER_WIDTH) + d);
+                              (cw = CM->ww - BORDER_WIDTH*2 - CM->master_size),
+                              (ch =  z - BORDER_WIDTH)  - BORDER_WIDTH + d);
 
     /* tile the rest of the non-floating, non-fullscreen stack windows */
-    if (c) for (CM->mode==BSTACK?(cx+=z+d):(cy+=z+d), c=c->next; c; c=c->next)
+    if (c) for (CM->mode==BSTACK?(cx+=cw+d):(cy+=ch+d), c=c->next; c; c=c->next)
         if (!c->isfullscrn && !c->isfloating && !c->istransient) {
             xcb_move_resize(dis, c->win, CM->wx + cx, CM->wy + cy, cw, ch);
             (CM->mode == BSTACK) ? (cx+=z) : (cy+=z);
