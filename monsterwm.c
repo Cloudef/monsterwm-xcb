@@ -765,7 +765,7 @@ void maprequest(xcb_generic_event_t *e) {
         for (unsigned int i=0; i<LENGTH(rules); i++)
             if (!strcmp(ch.class_name, rules[i].class) || !strcmp(ch.instance_name, rules[i].class)) {
                 follow = rules[i].follow;
-                newdsk = rules[i].desktop;
+                newdsk = (rules[i].desktop < 0) ? CM->current_desktop : rules[i].desktop;
                 floating = rules[i].floating;
                 break;
             }
@@ -1095,25 +1095,25 @@ void select_monitor(int i) {
 void save_desktop(int i) {
     if (i >= DESKTOPS) return;
     CM->desktops[i].master_size = CM->master_size;
-    CM->desktops[i].mode = CM->mode;
-    CM->desktops[i].growth = CM->growth;
-    CM->desktops[i].head = CM->head;
-    CM->desktops[i].current = CM->current;
-    CM->desktops[i].showpanel = CM->showpanel;
-    CM->desktops[i].prevfocus = CM->prevfocus;
+    CM->desktops[i].mode        = CM->mode;
+    CM->desktops[i].growth      = CM->growth;
+    CM->desktops[i].head        = CM->head;
+    CM->desktops[i].current     = CM->current;
+    CM->desktops[i].showpanel   = CM->showpanel;
+    CM->desktops[i].prevfocus   = CM->prevfocus;
 }
 
 /* set the specified desktop's properties */
 void select_desktop(int i) {
     if (i >= DESKTOPS) return;
     save_desktop(CM->current_desktop);
-    CM->master_size = CM->desktops[i].master_size;
-    CM->mode = CM->desktops[i].mode;
-    CM->growth = CM->desktops[i].growth;
-    CM->head = CM->desktops[i].head;
-    CM->current = CM->desktops[i].current;
-    CM->showpanel = CM->desktops[i].showpanel;
-    CM->prevfocus = CM->desktops[i].prevfocus;
+    CM->master_size     = CM->desktops[i].master_size;
+    CM->mode            = CM->desktops[i].mode;
+    CM->growth          = CM->desktops[i].growth;
+    CM->head            = CM->desktops[i].head;
+    CM->current         = CM->desktops[i].current;
+    CM->showpanel       = CM->desktops[i].showpanel;
+    CM->prevfocus       = CM->desktops[i].prevfocus;
     CM->current_desktop = i;
 }
 
