@@ -233,8 +233,8 @@ static void (*events[XCB_NO_OPERATION])(xcb_generic_event_t *e);
  * y (or cy) is the num of pixels from top to place the windows (y coordinate)
  */
 static void (*layout[MODES])(int h, int y) = {
-    [TILE]   = stack, [MONOCLE] = monocle,
-    [BSTACK] = stack, [GRID]    = grid,
+    [TILE] = stack, [BSTACK]  = stack,
+    [GRID] = grid,  [MONOCLE] = monocle,
 };
 
 /* get screen of display */
@@ -361,7 +361,7 @@ client* addwindow(xcb_window_t w) {
         for(t=CM->head; t->next; t=t->next); /* get the last client */
         t->next = c;
     } else {
-        c->next = (t = CM->head);
+        c->next = CM->head;
         CM->head = c;
     }
 
@@ -483,23 +483,20 @@ void client_to_monitor(const Arg *arg) {
  */
 void client_to_desktop(const Arg *arg) {
     if (arg->i == CM->current_desktop || !CM->current) return;
-    xcb_window_t w = CM->current->win;
     int cd = CM->current_desktop;
+    client *c = CM->current;
 
-    bool wfloating = CM->current->isfloating;
-    bool wfullscrn = CM->current->isfullscrn;
-    bool transient = CM->current->istransient;
-
-    xcb_unmap_window(dis, CM->current->win);
-    removeclient(CM->current);
-
+    /* add the window to the new desktop keeping the client's properties */
     select_desktop(arg->i);
-    CM->current = addwindow(w);
-    CM->current->isfloating = wfloating;
-    CM->current->isfullscrn = wfullscrn;
-    CM->current->istransient = transient;
+    CM->current = addwindow(c->win);
+    CM->current->isfloating  = c->isfloating;
+    CM->current->isfullscrn  = c->isfullscrn;
+    CM->current->istransient = c->istransient;
 
+    /* remove the window and client from the current desktop */
     select_desktop(cd);
+    xcb_unmap_window(dis, c->win);
+    removeclient(c);
     tile();
     update_current(CM->current);
 
@@ -977,8 +974,9 @@ void move_up() {
  */
 void next_win() {
     if (!CM->current || !CM->head->next) return;
-    update_current((CM->prevfocus = CM->current)->next ? CM->current->next : CM->head);
+    CM->current = (CM->prevfocus = CM->current)->next ? CM->current->next : CM->head;
     if (CM->mode == MONOCLE) xcb_map_window(dis, CM->current->win);
+    update_current(CM->current);
 }
 
 /* cyclic focus the previous window
@@ -1093,7 +1091,7 @@ void select_monitor(int i) {
 
 /* save specified desktop's properties */
 void save_desktop(int i) {
-    if (i >= DESKTOPS) return;
+    if (i < 0 || i >= DESKTOPS) return;
     CM->desktops[i].master_size = CM->master_size;
     CM->desktops[i].mode        = CM->mode;
     CM->desktops[i].growth      = CM->growth;
@@ -1105,7 +1103,7 @@ void save_desktop(int i) {
 
 /* set the specified desktop's properties */
 void select_desktop(int i) {
-    if (i >= DESKTOPS) return;
+    if (i < 0 || i >= DESKTOPS) return;
     save_desktop(CM->current_desktop);
     CM->master_size     = CM->desktops[i].master_size;
     CM->mode            = CM->desktops[i].mode;
@@ -1254,14 +1252,13 @@ void sigchld() {
 
 /* execute a command */
 void spawn(const Arg *arg) {
-    if (fork() == 0) {
-        if (dis) close(screen->root);
-        setsid();
-        execvp((char*)arg->com[0], (char**)arg->com);
-        fprintf(stderr, "error: execvp %s", (char *)arg->com[0]);
-        perror(" failed"); /* also prints the err msg */
-        exit(EXIT_SUCCESS);
-    }
+    if (fork()) return;
+    if (dis) close(screen->root);
+    setsid();
+    execvp((char*)arg->com[0], (char**)arg->com);
+    fprintf(stderr, "error: execvp %s", (char *)arg->com[0]);
+    perror(" failed"); /* also prints the err msg */
+    exit(EXIT_SUCCESS);
 }
 
 /* arrange windows in normal or bottom stack tile */
