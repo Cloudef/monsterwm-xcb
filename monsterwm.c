@@ -49,7 +49,7 @@ static char *NET_ATOM_NAME[]  = { "_NET_SUPPORTED", "_NET_WM_STATE_FULLSCREEN", 
 #define CLEANMASK(mask) (mask & ~(numlockmask | XCB_MOD_MASK_LOCK))
 #define BUTTONMASK      XCB_EVENT_MASK_BUTTON_PRESS|XCB_EVENT_MASK_BUTTON_RELEASE
 
-enum { RESIZE, MOVE };
+enum { PREV = -1, NEXT = 1, RESIZE, MOVE };
 enum { TILE, MONOCLE, BSTACK, GRID, MODES };
 enum { WM_PROTOCOLS, WM_DELETE_WINDOW, WM_COUNT };
 enum { NET_SUPPORTED, NET_FULLSCREEN, NET_WM_STATE, NET_ACTIVE, NET_COUNT };
@@ -188,7 +188,8 @@ static void removeclient(client *c);
 static void resize_master(const Arg *arg);
 static void resize_stack(const Arg *arg);
 static void rotate_monitor(const Arg *arg);
-static void rotate_desktop(const Arg *arg);
+static void rotate(const Arg *arg);
+static void rotate_filled(const Arg *arg);
 static void run(void);
 static void select_monitor(int i);
 static void save_desktop(int i);
@@ -717,7 +718,15 @@ void keypress(xcb_generic_event_t *e) {
  */
 void killclient() {
     if (!CM->current) return;
-    deletewindow(CM->current->win);
+    xcb_icccm_get_wm_protocols_reply_t reply; unsigned int n = 0; bool got = false;
+    if (xcb_icccm_get_wm_protocols_reply(dis,
+        xcb_icccm_get_wm_protocols(dis, CM->current->win, wmatoms[WM_PROTOCOLS]),
+        &reply, NULL)) { /* TODO: Handle error? */
+        for(; n != reply.atoms_len; ++n) if ((got = reply.atoms[n] == wmatoms[WM_DELETE_WINDOW])) break;
+        xcb_icccm_get_wm_protocols_reply_wipe(&reply);
+    }
+    if (got) deletewindow(CM->current->win);
+    else xcb_kill_client(dis, CM->current->win);
     removeclient(CM->current);
 }
 
@@ -1064,9 +1073,16 @@ void rotate_monitor(const Arg *arg) {
     change_monitor(&(Arg){.i = (current_monitor + MONITORS + arg->i) % MONITORS});
 }
 
-/* jump and focus the 'current + n' desktop */
-void rotate_desktop(const Arg *arg) {
-    change_desktop(&(Arg){.i = (CM->current_desktop + DESKTOPS + arg->i) % DESKTOPS});
+/* jump and focus the next or previous desktop */
+void rotate(const Arg *arg) {
+    change_desktop(&(Arg){.i = (DESKTOPS + CM->current_desktop + arg->i) % DESKTOPS});
+}
+
+/* jump and focus the next or previous desktop that has clients */
+void rotate_filled(const Arg *arg) {
+    int n = arg->i;
+    while (n < DESKTOPS && !CM->desktops[(DESKTOPS + CM->current_desktop + n) % DESKTOPS].head) (n += arg->i);
+    change_desktop(&(Arg){.i = (DESKTOPS + CM->current_desktop + n) % DESKTOPS});
 }
 
 /* main event loop - on receival of an event call the appropriate event handler */
