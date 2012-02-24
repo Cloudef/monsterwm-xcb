@@ -1586,17 +1586,15 @@ void update_current(client *c) {
 
     xcb_change_property(dis, XCB_PROP_MODE_REPLACE, screen->root, netatoms[NET_ACTIVE], XCB_ATOM_WINDOW, 32, 1, &CM->current->win);
     xcb_set_input_focus(dis, XCB_INPUT_FOCUS_POINTER_ROOT, CM->current->win, XCB_CURRENT_TIME);
+    if (CLICK_TO_FOCUS) xcb_ungrab_button(dis, XCB_BUTTON_INDEX_1, CM->current->win, XCB_BUTTON_MASK_ANY);
 
     /* keep transient and floating windows on top of regular windows */
-    bool tf = false;
-    for (c=CM->head; c; c=c->next) if (c->istransient || c->isfloating) { xcb_raise_window(dis, CM->current->win); tf = true; }
-    if (!tf || CM->current->isfloating || CM->current->istransient) xcb_raise_window(dis, CM->current->win);
+    bool r = false;
+    if (CM->current->isfloating || CM->current->istransient)                { xcb_raise_window(dis, CM->current->win); r = true; }
+    else for(c=CM->head; c; c=c->next) if (c->istransient || c->isfloating) { xcb_raise_window(dis, c->win); r = true; }
+    if (!r) xcb_raise_window(dis, CM->current->win);
 
-    if (CLICK_TO_FOCUS) {
-        xcb_ungrab_button(dis, XCB_BUTTON_INDEX_1, CM->current->win, XCB_BUTTON_MASK_ANY);
-        grabbuttons(CM->current);
-    }
-
+    if (CLICK_TO_FOCUS) grabbuttons(CM->current);
     drawbar(true);
 }
 
