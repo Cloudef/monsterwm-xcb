@@ -218,7 +218,7 @@ static void select_monitor(int i);
 static void save_desktop(int i);
 static void select_desktop(int i);
 static void setfullscreen(client *c, bool fullscrn);
-static int setup(int window, int default_screen);
+static int setup(int default_screen);
 static void sigchld();
 static void spawn(const Arg *arg);
 static void stack(int h, int y);
@@ -249,6 +249,7 @@ static xcb_connection_t *dis;
 static xcb_screen_t *screen;
 static xcb_atom_t wmatoms[WM_COUNT], netatoms[NET_COUNT];
 static char statustext[255];
+static int STANDALONE_MODE = 0;
 
 /* events array
  * on receival of a new event, call the appropriate function to handle it
@@ -510,8 +511,8 @@ void change_desktop(const Arg *arg) {
 
 /* remove all windows in all desktops by sending a delete message */
 void cleanup(void) {
-    xcb_query_tree_reply_t  *reply;
-    unsigned int nchildren;
+    xcb_query_tree_reply_t  *query;
+    xcb_window_t *c;
 
     for (int m=0; m<MONITORS; m++) {
         cairo_destroy(monitors[m].bar_cr);
@@ -520,11 +521,10 @@ void cleanup(void) {
     free(monitors);
 
     xcb_ungrab_key(dis, XCB_GRAB_ANY, screen->root, XCB_MOD_MASK_ANY);
-    reply = xcb_query_tree_reply(dis, xcb_query_tree(dis, screen->root), NULL); /* TODO: error handling */
-    if (reply) {
-        nchildren = reply[0].children_len;
-        for (unsigned int i = 0; i<nchildren; i++) deletewindow(reply[i].parent);
-        free(reply);
+    if ((query = xcb_query_tree_reply(dis,xcb_query_tree(dis,screen->root),0))) {
+        c = xcb_query_tree_children(query);
+        for (unsigned int i = 0; i != query->children_len; ++i) deletewindow(c[i]);
+        free(query);
     }
     xcb_set_input_focus(dis, XCB_NONE, XCB_INPUT_FOCUS_POINTER_ROOT, XCB_CURRENT_TIME);
 }
@@ -1230,7 +1230,14 @@ void run(void) {
             free(ev);
         }
 #if OPENGL
-        loopgl(CM->bar_win); /* enter opengl loop */
+        loopgl(0, CM->bar_win);  /* draw bar */
+        if (!STANDALONE_MODE) {
+            for (client *c=CM->head; c; c=c->next)
+               loopgl(0, c->win);   /* draw clients */
+        } else {
+
+        }
+        swapgl();
 #endif
     }
 }
@@ -1426,12 +1433,12 @@ static void setup_monitor(int i, int x, int y, int w, int h)
     DEBUGP("%d: %dx%d+%d,%d\n", i, CM->ww, CM->wh, CM->wx, CM->wy);
 }
 
-static void setup_monitors(int window)
+static void setup_monitors()
 {
 #if XINERAMA
     xcb_xinerama_query_screens_reply_t *xinerama_reply;
     xcb_xinerama_screen_info_iterator_t xinerama_iter;
-    if (!window) {
+    if (!STANDALONE_MODE) {
         if (!(xinerama_reply = xcb_xinerama_query_screens_reply(dis, xcb_xinerama_query_screens(dis), NULL))) /* TODO: check error */
             die("error: xinerama failed to query screens\n");
         xinerama_iter = xcb_xinerama_query_screens_screen_info_iterator(xinerama_reply);
@@ -1445,7 +1452,7 @@ static void setup_monitors(int window)
     if (!(monitors = calloc(MONITORS, sizeof(monitor)))) die("error: could not allocate memory for monitors");
 
 #if XINERAMA
-    if (xinerama_iter.rem && !window) {
+    if (xinerama_iter.rem && !STANDALONE_MODE) {
         for (int i=0; xinerama_iter.rem; xcb_xinerama_screen_info_next(&xinerama_iter)) {
             setup_monitor(i++, xinerama_iter.data->x_org, xinerama_iter.data->y_org,
                     xinerama_iter.data->width,
@@ -1462,7 +1469,8 @@ static void setup_monitors(int window)
  * set masks for reporting events handled by the wm
  * and propagate the suported net atoms
  */
-int setup(int window, int default_screen) {
+int setup(int default_screen) {
+    xcb_window_t window, root;
     sigchld();
     strcpy(statustext, WMNAME" "VERSION);
 
@@ -1470,7 +1478,8 @@ int setup(int window, int default_screen) {
     if (!screen) die("error: cannot aquire screen\n");
 
     /* window mode */
-    if (window) {
+    if (STANDALONE_MODE) {
+        root = screen->root;
         window = xcb_generate_id(dis);
         xcb_create_window(dis, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, 640, 480, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, NULL);
         xcb_map_window(dis, (screen->root = window));
@@ -1481,13 +1490,14 @@ int setup(int window, int default_screen) {
     if (xcb_checkotherwm()) die("error: other wm is running\n");
 
     /* setup monitors */
-    setup_monitors(window);
+    setup_monitors();
     win_focus   = getcolor(FOCUS);
     win_unfocus = getcolor(UNFOCUS);
 
 #if OPENGL
     if (setupgl(screen->root, screen->width_in_pixels, screen->height_in_pixels) == -1)
         die("error: failed to enable composition\n");
+    if (STANDALONE_MODE) redirectgl(root);
 #endif
 
     /* setup keyboard */
@@ -1724,15 +1734,15 @@ void closeconnection()
 }
 
 int main(int argc, char *argv[]) {
-    int default_screen, window = 0;
+    int default_screen;
     if (argc == 2 && !strcmp("-v", argv[1])) {
         fprintf(stdout, "%s-%s\n", WMNAME, VERSION);
         return EXIT_SUCCESS;
-    } else if (argc == 2 && !strcmp("-t", argv[1])) window = 1;
+    } else if (argc == 2 && !strcmp("-t", argv[1])) STANDALONE_MODE = 1;
       else if (argc != 1) die("usage: %s [-v][-t]\n", WMNAME);
     if (!openconnection(&default_screen))
         die("error: cannot open xcb connection.\n");
-    if (setup(window, default_screen) != -1) {
+    if (setup(default_screen) != -1) {
       desktopinfo(); /* zero out every desktop on (re)start */
       run();
     }

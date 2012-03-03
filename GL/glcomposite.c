@@ -46,6 +46,9 @@ static glwin* alloc_glwin(xcb_window_t win)
    w->next = NULL;
    w->prev = NULL;
 
+   /* redirect window */
+   xcb_composite_redirect_window(dis, win, XCB_COMPOSITE_REDIRECT_MANUAL);
+
    /* create gl texture from pixmap */
    xcb_pix = xcb_generate_id(dis);
    xcb_composite_name_window_pixmap(dis, win, xcb_pix);
@@ -67,15 +70,21 @@ static glwin* alloc_glwin(xcb_window_t win)
    return w;
 }
 
-static void dealloc_glwin(glwin *w)
+static glwin* dealloc_glwin(glwin *w)
 {
-   if (!w->prev) glstack = NULL;
+   glwin *prev;
+
+   if (!(prev = w->prev)) glstack = NULL;
    else w->prev->next = w->next;
+
+   /* release */
+   xcb_composite_unredirect_window(dis, w->win, XCB_COMPOSITE_REDIRECT_MANUAL);
 
    /* free */
    glXReleaseTexImageEXT(gldis, w->pix, GLX_FRONT_LEFT_EXT);
    glDeleteTextures(1, &w->tex);
    free(w);
+   return prev;
 }
 
 static glwin* win_to_glwin(xcb_window_t win)
@@ -89,7 +98,7 @@ static glwin* add_glwin(xcb_window_t win)
 {
    glwin *w;
    if ((w = win_to_glwin(win))) return w; /* already exists */
-   if (!glstack)           return (glstack = alloc_glwin(win));
+   if (!glstack)                return (glstack = alloc_glwin(win));
    for (w = glstack; w && w->next;  w = w->next);
    return (w->next = alloc_glwin(win));
 }
@@ -167,6 +176,21 @@ static GLXFBConfig ChoosePixmapFBConfig()
    return confs[i];
 }
 
+void redirectgl(Window root)
+{
+   xcb_window_t *c;
+   xcb_query_tree_reply_t *query;
+   xcb_grab_server(dis);
+   if (!(query = xcb_query_tree_reply(dis,xcb_query_tree(dis,root),0))) {
+      xcb_ungrab_server(dis);
+      return;
+   }
+   c = xcb_query_tree_children(query);
+   for (unsigned int i = 0; i != query->children_len; ++i) add_glwin(c[i]);
+   free(query);
+   xcb_ungrab_server(dis);
+}
+
 int setupgl(Window root, int width, int height)
 {
    GLint att[] = { GLX_RGBA, GLX_DOUBLEBUFFER, None };
@@ -202,7 +226,7 @@ int setupgl(Window root, int width, int height)
    }
 
    /* redirect all windows */
-   xcb_composite_redirect_subwindows(dis, glroot, XCB_COMPOSITE_REDIRECT_MANUAL);
+   // xcb_composite_redirect_subwindows(dis, glroot, XCB_COMPOSITE_REDIRECT_MANUAL);
 
    /* get framebuffer configuration for pixmaps */
    pixconfig = ChoosePixmapFBConfig(gldis);
@@ -214,20 +238,19 @@ int setupgl(Window root, int width, int height)
    return 1;
 }
 
-static void swapgl()
+void swapgl()
 {
    glXSwapBuffers(gldis, glroot);
+   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 
-void loopgl(xcb_window_t window)
+void loopgl(int update, xcb_window_t window)
 {
    glwin *win;
 
-   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
    if (!(win = add_glwin(window))) return;
    update_glwin(win);
    draw_glwin(win);
-   swapgl();
 }
 
 /* open openGL connection which needs x11-xcb */
@@ -260,8 +283,7 @@ void closeconnectiongl()
    glwin *wn;
 
    /* free all windows */
-   for (glwin *w = glstack; w; w = wn)
-   { wn = w->next; free(w); }
+   for (glwin *w = glstack; w; w = wn) wn = dealloc_glwin(w);
 
    glXDestroyContext(gldis, glctx);
    XCloseDisplay(gldis);
