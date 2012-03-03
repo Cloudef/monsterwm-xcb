@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <assert.h>
 #include <stdarg.h>
 #include <string.h>
 #include "glcomposite.h"
@@ -9,7 +10,8 @@
 static xcb_connection_t    *dis;
 static Display             *gldis;
 static int                 glscrn;
-static Window              glroot;
+static xcb_window_t        glroot;
+static xcb_window_t        glrealroot = 0;
 static GLXContext          glctx;
 static GLXFBConfig         pixconfig;
 static int glwidth, glheight;
@@ -29,13 +31,41 @@ typedef struct glwin
 
 glwin *glstack = NULL;
 
-static glwin* alloc_glwin(xcb_window_t win)
+static void xcb_get_attributes(xcb_window_t *windows, xcb_get_window_attributes_reply_t **reply, unsigned int count) {
+    xcb_get_window_attributes_cookie_t cookies[count];
+    for (unsigned int i = 0; i < count; i++) cookies[i] = xcb_get_window_attributes(dis, windows[i]);
+    for (unsigned int i = 0; i < count; i++) reply[i]   = xcb_get_window_attributes_reply(dis, cookies[i], NULL);
+}
+
+static void update_glwin(glwin *win)
+{
+   xcb_get_geometry_reply_t *geometry;
+   assert(win);
+
+   if (!(geometry = xcb_get_geometry_reply(dis, xcb_get_geometry(dis, win->win), NULL)))
+      return;
+
+   printf("geom: %ux%u+%d+%d\n", geometry->width, geometry->height, geometry->x, geometry->y);
+
+   win->w = geometry->width; win->h = geometry->height,
+   win->x = geometry->x;     win->y = geometry->y;
+   free(geometry);
+}
+
+static glwin* alloc_glwin(xcb_window_t win, glwin *prev)
 {
    int pixatt[] = { GLX_TEXTURE_TARGET_EXT, GLX_TEXTURE_RECTANGLE_EXT,
                     GLX_TEXTURE_FORMAT_EXT, GLX_TEXTURE_FORMAT_RGB_EXT,
                     None };
    xcb_pixmap_t xcb_pix;
-   glwin *w = malloc(sizeof(glwin));
+   xcb_get_window_attributes_reply_t  *attr[1];
+   glwin *w;
+
+   xcb_get_attributes(&win, attr, 1);
+   if (!attr[0] || attr[0]->override_redirect) return NULL;
+
+   /* allocate to stack */
+   if (!(w = malloc(sizeof(glwin)))) return NULL;
    w->win  = win;
    w->tex  = 0;
    w->pix  = 0;
@@ -44,7 +74,10 @@ static glwin* alloc_glwin(xcb_window_t win)
    w->x    = 0;
    w->y    = 0;
    w->next = NULL;
-   w->prev = NULL;
+   w->prev = prev;
+
+   /* update window information first */
+   update_glwin(w);
 
    /* redirect window */
    xcb_composite_redirect_window(dis, win, XCB_COMPOSITE_REDIRECT_MANUAL);
@@ -52,6 +85,11 @@ static glwin* alloc_glwin(xcb_window_t win)
    /* create gl texture from pixmap */
    xcb_pix = xcb_generate_id(dis);
    xcb_composite_name_window_pixmap(dis, win, xcb_pix);
+
+   /* only needed when we arent real root */
+   if (glrealroot)
+      xcb_create_pixmap (dis, 24, xcb_pix, glroot, w->w, w->h);
+
    w->pix = glXCreatePixmap(gldis, pixconfig, xcb_pix, pixatt);
    xcb_free_pixmap(dis, xcb_pix);
 
@@ -64,25 +102,23 @@ static glwin* alloc_glwin(xcb_window_t win)
    glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
    glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-   /* we handle this window now with opengl :) */
-   //xcb_unmap_window(dis, win);
-
    return w;
 }
 
 static glwin* dealloc_glwin(glwin *w)
 {
    glwin *prev;
+   assert(w);
 
    if (!(prev = w->prev)) glstack = NULL;
    else w->prev->next = w->next;
 
    /* release */
-   xcb_composite_unredirect_window(dis, w->win, XCB_COMPOSITE_REDIRECT_MANUAL);
+   if (w->win) xcb_composite_unredirect_window(dis, w->win, XCB_COMPOSITE_REDIRECT_MANUAL);
 
    /* free */
-   glXReleaseTexImageEXT(gldis, w->pix, GLX_FRONT_LEFT_EXT);
-   glDeleteTextures(1, &w->tex);
+   if (w->pix) glXReleaseTexImageEXT(gldis, w->pix, GLX_FRONT_LEFT_EXT);
+   if (w->tex) glDeleteTextures(1, &w->tex);
    free(w);
    return prev;
 }
@@ -98,27 +134,15 @@ static glwin* add_glwin(xcb_window_t win)
 {
    glwin *w;
    if ((w = win_to_glwin(win))) return w; /* already exists */
-   if (!glstack)                return (glstack = alloc_glwin(win));
+   if (!glstack)                return (glstack = alloc_glwin(win, NULL));
    for (w = glstack; w && w->next;  w = w->next);
-   return (w->next = alloc_glwin(win));
-}
-
-static void update_glwin(glwin *win)
-{
-   xcb_get_geometry_reply_t *geometry;
-   if (!(geometry = xcb_get_geometry_reply(dis, xcb_get_geometry(dis, win->win), NULL)))
-      return;
-
-   printf("geom: %ux%u+%d+%d\n", geometry->width, geometry->height, geometry->x, geometry->y);
-
-   win->w = geometry->width; win->h = geometry->height,
-   win->x = geometry->x;     win->y = geometry->y;
-   free(geometry);
+   return (w->next = alloc_glwin(win, w));
 }
 
 static void draw_glwin(glwin *win)
 {
    float wx, wy, ww, hh;
+   assert(win);
 
    ww  = (float)win->w/glwidth; hh = (float)win->h/glheight;
    wx  = (float)win->x/glwidth; wy = (float)win->y/glheight;
@@ -176,22 +200,23 @@ static GLXFBConfig ChoosePixmapFBConfig()
    return confs[i];
 }
 
-void redirectgl(Window root)
+/* set real root, this tells us that setup GL window wasn't actual root, hence we are not a WM */
+void setrootgl(xcb_window_t root)
 {
    xcb_window_t *c;
    xcb_query_tree_reply_t *query;
-   xcb_grab_server(dis);
-   if (!(query = xcb_query_tree_reply(dis,xcb_query_tree(dis,root),0))) {
-      xcb_ungrab_server(dis);
+   glrealroot = root;
+
+   if (!(query = xcb_query_tree_reply(dis,xcb_query_tree(dis,root),0)))
       return;
-   }
+
    c = xcb_query_tree_children(query);
-   for (unsigned int i = 0; i != query->children_len; ++i) add_glwin(c[i]);
+   for (unsigned int i = 0; i != query->children_len; ++i)
+      if (c[i] != glroot && c[i] != root) add_glwin(c[i]);
    free(query);
-   xcb_ungrab_server(dis);
 }
 
-int setupgl(Window root, int width, int height)
+int setupgl(xcb_window_t root, int width, int height)
 {
    GLint att[] = { GLX_RGBA, GLX_DOUBLEBUFFER, None };
    XVisualInfo *vi;
@@ -233,7 +258,7 @@ int setupgl(Window root, int width, int height)
    glEnable(GL_TEXTURE_RECTANGLE_ARB);
 
    /* setup bg color */
-   glClearColor(.0, .0, .2, 1.0);
+   glClearColor(.0, .0, .0, 1.0);
 
    return 1;
 }
@@ -244,13 +269,13 @@ void swapgl()
    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 
-void loopgl(int update, xcb_window_t window)
+void loopgl()
 {
    glwin *win;
-
-   if (!(win = add_glwin(window))) return;
-   update_glwin(win);
-   draw_glwin(win);
+   for (win = glstack; win; win = win->next) {
+      update_glwin(win);
+      draw_glwin(win);
+   }
 }
 
 /* open openGL connection which needs x11-xcb */

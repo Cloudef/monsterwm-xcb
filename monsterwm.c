@@ -249,7 +249,7 @@ static xcb_connection_t *dis;
 static xcb_screen_t *screen;
 static xcb_atom_t wmatoms[WM_COUNT], netatoms[NET_COUNT];
 static char statustext[255];
-static int STANDALONE_MODE = 0;
+static xcb_window_t realroot = 0;
 
 /* events array
  * on receival of a new event, call the appropriate function to handle it
@@ -855,7 +855,7 @@ void maprequest(xcb_generic_event_t *e) {
 
     DEBUG("xcb: map request");
     xcb_get_attributes(windows, attr, 1);
-    if (attr[0]->override_redirect) return;
+    if (!attr[0] || attr[0]->override_redirect) return;
     if (wintoclient(ev->window))    return;
     DEBUG("xcb: manage");
 
@@ -1230,13 +1230,7 @@ void run(void) {
             free(ev);
         }
 #if OPENGL
-        loopgl(0, CM->bar_win);  /* draw bar */
-        if (!STANDALONE_MODE) {
-            for (client *c=CM->head; c; c=c->next)
-               loopgl(0, c->win);   /* draw clients */
-        } else {
-
-        }
+        loopgl();
         swapgl();
 #endif
     }
@@ -1438,7 +1432,7 @@ static void setup_monitors()
 #if XINERAMA
     xcb_xinerama_query_screens_reply_t *xinerama_reply;
     xcb_xinerama_screen_info_iterator_t xinerama_iter;
-    if (!STANDALONE_MODE) {
+    if (!realroot) {
         if (!(xinerama_reply = xcb_xinerama_query_screens_reply(dis, xcb_xinerama_query_screens(dis), NULL))) /* TODO: check error */
             die("error: xinerama failed to query screens\n");
         xinerama_iter = xcb_xinerama_query_screens_screen_info_iterator(xinerama_reply);
@@ -1452,7 +1446,7 @@ static void setup_monitors()
     if (!(monitors = calloc(MONITORS, sizeof(monitor)))) die("error: could not allocate memory for monitors");
 
 #if XINERAMA
-    if (xinerama_iter.rem && !STANDALONE_MODE) {
+    if (xinerama_iter.rem && !realroot) {
         for (int i=0; xinerama_iter.rem; xcb_xinerama_screen_info_next(&xinerama_iter)) {
             setup_monitor(i++, xinerama_iter.data->x_org, xinerama_iter.data->y_org,
                     xinerama_iter.data->width,
@@ -1470,7 +1464,7 @@ static void setup_monitors()
  * and propagate the suported net atoms
  */
 int setup(int default_screen) {
-    xcb_window_t window, root;
+    xcb_window_t window;
     sigchld();
     strcpy(statustext, WMNAME" "VERSION);
 
@@ -1478,12 +1472,15 @@ int setup(int default_screen) {
     if (!screen) die("error: cannot aquire screen\n");
 
     /* window mode */
-    if (STANDALONE_MODE) {
-        root = screen->root;
+    if (realroot) {
+        if (realroot == 2) {
+            screen->width_in_pixels = 640;
+            screen->height_in_pixels = 480;
+        }
+        realroot = screen->root;
         window = xcb_generate_id(dis);
-        xcb_create_window(dis, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, 640, 480, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, NULL);
+        xcb_create_window(dis, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, screen->width_in_pixels, screen->height_in_pixels, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, NULL);
         xcb_map_window(dis, (screen->root = window));
-        screen->width_in_pixels = 640; screen->height_in_pixels = 480;
     }
 
     /* check if another wm is running */
@@ -1497,7 +1494,7 @@ int setup(int default_screen) {
 #if OPENGL
     if (setupgl(screen->root, screen->width_in_pixels, screen->height_in_pixels) == -1)
         die("error: failed to enable composition\n");
-    if (STANDALONE_MODE) redirectgl(root);
+    if (realroot) setrootgl(realroot);
 #endif
 
     /* setup keyboard */
@@ -1738,8 +1735,9 @@ int main(int argc, char *argv[]) {
     if (argc == 2 && !strcmp("-v", argv[1])) {
         fprintf(stdout, "%s-%s\n", WMNAME, VERSION);
         return EXIT_SUCCESS;
-    } else if (argc == 2 && !strcmp("-t", argv[1])) STANDALONE_MODE = 1;
-      else if (argc != 1) die("usage: %s [-v][-t]\n", WMNAME);
+    } else if (argc == 2 && !strcmp("-t",  argv[1])) realroot = 1; /* go standalone window mode */
+      else if (argc == 2 && !strcmp("-tt", argv[1])) realroot = 2; /* go standalone window fullscreen mode */
+      else if (argc != 1) die("usage: %s [-v][-t[t]]\n", WMNAME);
     if (!openconnection(&default_screen))
         die("error: cannot open xcb connection.\n");
     if (setup(default_screen) != -1) {
