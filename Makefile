@@ -8,10 +8,10 @@ BINDIR ?= ${PREFIX}/bin
 MANPREFIX = ${PREFIX}/share/man
 
 INCS = -I. -I/usr/include
-LIBS = -L/usr/lib -lc `pkg-config --libs xcb xcb-icccm xcb-keysyms cairo`
+LIBS = -L/usr/lib -lc -lX11-xcb `pkg-config --libs gl x11 xcb-glx xcb-composite xcb-icccm xcb-keysyms cairo pangocairo`
 
 CPPFLAGS = -DVERSION=\"${VERSION}\" -DWMNAME=\"${WMNAME}\"
-CFLAGS   = -std=c99 -pedantic -Wall -Wextra ${INCS} ${CPPFLAGS}
+CFLAGS   = -std=c99 -pedantic -Wall -Wextra ${INCS} ${CPPFLAGS} `pkg-config --cflags xcb cairo pangocairo`
 LDFLAGS  = ${LIBS}
 
 XINERAMA = 1
@@ -20,7 +20,7 @@ DEBUG	 = 1
 CC 	 = cc
 EXEC = ${WMNAME}
 
-SRC = ${WMNAME}.c
+SRC = ${WMNAME}.c GL/glcomposite.c
 OBJ = ${SRC:.c=.o}
 
 ifeq (${DEBUG},0)
@@ -44,9 +44,9 @@ options:
 	@echo "LDFLAGS  = ${LDFLAGS}"
 	@echo "CC       = ${CC}"
 
-.c.o:
+%.o: %.c
 	@echo CC $<
-	@${CC} -c ${CFLAGS} $<
+	@${CC} -c -o $@ ${CFLAGS} $<
 
 ${OBJ}: config.h
 

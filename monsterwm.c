@@ -18,10 +18,16 @@
 #endif
 
 #include <cairo/cairo.h>
+#include <pango/pangocairo.h>
 #ifndef CAIRO_HAS_XCB_SURFACE
 #  error Cairo was not compiled with XCB support
 #endif
 #include <cairo/cairo-xcb.h>
+
+#define OPENGL 1
+#if OPENGL
+#  include "GL/glcomposite.h"
+#endif
 
 /* TODO: Reduce SLOC */
 
@@ -35,15 +41,18 @@
 #endif
 
 /* upstream compatility */
-#define True  true
-#define False false
-#define Mod1Mask     XCB_MOD_MASK_1
-#define Mod4Mask     XCB_MOD_MASK_4
-#define ShiftMask    XCB_MOD_MASK_SHIFT
-#define ControlMask  XCB_MOD_MASK_CONTROL
-#define Button1      XCB_BUTTON_INDEX_1
-#define Button2      XCB_BUTTON_INDEX_2
-#define Button3      XCB_BUTTON_INDEX_3
+#if !OPENGL
+#  define True  true
+#  define False false
+#  define Mod1Mask     XCB_MOD_MASK_1
+#  define Mod4Mask     XCB_MOD_MASK_4
+#  define ShiftMask    XCB_MOD_MASK_SHIFT
+#  define ControlMask  XCB_MOD_MASK_CONTROL
+#  define Button1      XCB_BUTTON_INDEX_1
+#  define Button2      XCB_BUTTON_INDEX_2
+#  define Button3      XCB_BUTTON_INDEX_3
+#endif
+
 #define XCB_MOVE_RESIZE XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y | XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT
 #define XCB_MOVE        XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y
 #define XCB_RESIZE      XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT
@@ -209,7 +218,7 @@ static void select_monitor(int i);
 static void save_desktop(int i);
 static void select_desktop(int i);
 static void setfullscreen(client *c, bool fullscrn);
-static int setup(int default_screen);
+static int setup(int window, int default_screen);
 static void sigchld();
 static void spawn(const Arg *arg);
 static void stack(int h, int y);
@@ -239,6 +248,7 @@ static monitor *CM; /* comes from current_monitor, shortened to CM to avoid code
 static xcb_connection_t *dis;
 static xcb_screen_t *screen;
 static xcb_atom_t wmatoms[WM_COUNT], netatoms[NET_COUNT];
+static char statustext[255];
 
 /* events array
  * on receival of a new event, call the appropriate function to handle it
@@ -280,6 +290,47 @@ xcb_visualtype_t *xcb_get_root_visual_type(xcb_screen_t *s) {
     }
 
     return visual_type;
+}
+
+static char *PANGOFONT = "Terminus";
+static void setfont(char *font)
+{
+    PANGOFONT = font;
+}
+
+static void textsize(const char *str, int *w, int *h, cairo_t *cr)
+{
+    PangoLayout  *layout;
+    PangoFontDescription *desc;
+    layout = pango_cairo_create_layout(cr);
+    pango_layout_set_text(layout, str, -1);
+    desc = pango_font_description_from_string(PANGOFONT);
+    pango_layout_set_font_description(layout, desc);
+    pango_font_description_free(desc);
+    pango_layout_get_pixel_size(layout, w, h);
+    g_object_unref(layout);
+}
+
+/* render text */
+static void drawtext(const char *str, int x, int y, cairo_t *cr)
+{
+    PangoLayout *layout;
+    PangoFontDescription *desc;
+    int width, height;
+
+    layout = pango_cairo_create_layout(cr);
+    pango_layout_set_text(layout, str, -1);
+    desc = pango_font_description_from_string(PANGOFONT);
+    pango_layout_set_font_description(layout, desc);
+    pango_font_description_free(desc);
+
+    pango_layout_get_pixel_size(layout, &width, &height);
+    cairo_move_to(CM->bar_cr, x, y - (height/3));
+
+    pango_cairo_update_layout(cr, layout);
+    pango_cairo_show_layout_line (cr, pango_layout_get_line (layout, 0));
+
+    g_object_unref(layout);
 }
 
 /* wrapper to move and resize window */
@@ -808,7 +859,7 @@ void maprequest(xcb_generic_event_t *e) {
     if (wintoclient(ev->window))    return;
     DEBUG("xcb: manage");
 
-    bool follow = false, floating = false; char name[255];
+    bool follow = false, floating = false; char name[255]; memset(name, 0, 255);
     int cd = CM->current_desktop, newdsk = CM->current_desktop;
     if (xcb_icccm_get_wm_class_reply(dis, xcb_icccm_get_wm_class(dis, ev->window), &ch, NULL)) { /* TODO: error handling */
         DEBUGP("class: %s instance: %s\n", ch.class_name, ch.instance_name);
@@ -831,13 +882,14 @@ void maprequest(xcb_generic_event_t *e) {
     }
 
     if (xcb_icccm_get_wm_name_reply(dis, xcb_icccm_get_wm_name_unchecked(dis, ev->window), &text_reply, NULL)) { /* TODO: error handling */
-        strncpy(name, text_reply.name, 254);
+        memcpy(name, text_reply.name, text_reply.name_len);
         xcb_icccm_get_text_property_reply_wipe(&text_reply);
-    } else strncpy(name, "broken", 254);
+    } else strcpy(name, "broken");
 
     select_desktop(newdsk);
     CM->prevfocus = CM->current;
     CM->current   = addwindow(ev->window);
+    memset(CM->current->name, 0, 255);
     strcpy(CM->current->name, name);
 
     xcb_icccm_get_wm_transient_for_reply(dis, xcb_icccm_get_wm_transient_for_unchecked(dis, ev->window), &transient, NULL); /* TODO: error handling */
@@ -1052,6 +1104,21 @@ void prev_win() {
     update_current(CM->current);
 }
 
+/* update status text */
+void updatestatus(client *c)
+{
+    xcb_icccm_get_text_property_reply_t text_reply;
+    char name[255];
+    memset(name, 0, 255);
+    if (xcb_icccm_get_wm_name_reply(dis, xcb_icccm_get_wm_name_unchecked(dis, c?c->win:screen->root), &text_reply, NULL)) { /* TODO: error handling */
+        memcpy(name, text_reply.name, text_reply.name_len);
+        xcb_icccm_get_text_property_reply_wipe(&text_reply);
+    } else strcpy(name, "broken");
+    if (c) strncpy(c->name, name, 254);
+    else   strncpy(statustext, name, 254);
+    drawbars();
+}
+
 /* property notify is called when one of the window's properties
  * is changed, such as an urgent hint is received
  */
@@ -1061,8 +1128,19 @@ void propertynotify(xcb_generic_event_t *e) {
     client *c;
 
     DEBUG("xcb: property notify");
-    c = wintoclient(ev->window);
-    if (!c || ev->atom != XCB_ICCCM_WM_ALL_HINTS) return;
+
+    /* update status */
+    if (ev->window == screen->root && ev->atom == XCB_ATOM_WM_NAME)
+        updatestatus(NULL);
+
+    /* get client */
+    if (!(c = wintoclient(ev->window))) return;
+
+    /* get name */
+    if (ev->atom == XCB_ATOM_WM_NAME)
+        updatestatus(c);
+
+    if (ev->atom != XCB_ICCCM_WM_ALL_HINTS) return;
     DEBUG("xcb: got hint!");
     if (xcb_icccm_get_wm_hints_reply(dis, xcb_icccm_get_wm_hints(dis, ev->window), &wmh, NULL)) /* TODO: error handling */
         c->isurgent = (wmh.flags & XCB_ICCCM_WM_HINT_X_URGENCY);
@@ -1151,6 +1229,9 @@ void run(void) {
             else { DEBUGP("xcb: unimplented event: %d\n", ev->response_type & ~0x80); }
             free(ev);
         }
+#if OPENGL
+        loopgl(CM->bar_win); /* enter opengl loop */
+#endif
     }
 }
 
@@ -1225,7 +1306,7 @@ int setup_keyboard(void)
 }
 
 void drawbar(bool active_monitor) {
-    int offsetx = 0;
+    int offsetx = 0, width = 0, height = 0;
 
     /* background */
     xcb_rectangle_t panel_vis[] = {
@@ -1257,23 +1338,19 @@ void drawbar(bool active_monitor) {
     xcb_copy_area(dis, CM->bar_pixmap, CM->bar_win, CM->bar_gc, 0, 0, 0, 0, CM->ww + BORDER_WIDTH, PANEL_HEIGHT);
 
     /* cairo draw */
-    cairo_text_extents_t te;
     unsigned int rgb = xcb_get_colorpixel(CM->mode == TILE ? "#ff0000" : CM->mode == BSTACK ? "#00FF00" : CM->mode == MONOCLE ? "#000000" : "#FFFFFF");
     const char *text = CM->mode == TILE ? "TILE" : CM->mode == BSTACK ? "BSTACK" : CM->mode == MONOCLE ? "MONOCLE" : "GRID";
     cairo_set_source_rgb(CM->bar_cr, (double)((rgb >> 16) / 255.0), (double)((rgb >> 8 & 0xFF) / 255.0), (double)((rgb & 0xFF) / 255.0));
-    cairo_select_font_face (CM->bar_cr, "Erufont", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
-    cairo_set_font_size(CM->bar_cr, 12);
-    cairo_text_extents(CM->bar_cr, text, &te);
-    cairo_move_to(CM->bar_cr, offsetx - te.x_bearing, PANEL_HEIGHT / 2 - te.height / 2 - te.y_bearing);
-    cairo_show_text(CM->bar_cr, text);
-    offsetx += 5 + te.width;
+    setfont("IPAGothic 10");
+    drawtext(text, offsetx, PANEL_HEIGHT, CM->bar_cr);
+    textsize(text, &width, &height, CM->bar_cr);
+    offsetx += 5 + width;
 
     /* draw status */
     rgb = xcb_get_colorpixel("#9d9d9d");
     cairo_set_source_rgb(CM->bar_cr, (double)((rgb >> 16) / 255.0), (double)((rgb >> 8 & 0xFF) / 255.0), (double)((rgb & 0xFF) / 255.0));
-    cairo_text_extents(CM->bar_cr, "Yay! Status...", &te);
-    cairo_move_to(CM->bar_cr, (CM->ww + BORDER_WIDTH) - te.width - te.x_bearing - 5, PANEL_HEIGHT / 2 - te.height / 2 - te.y_bearing);
-    cairo_show_text(CM->bar_cr, "Yay! Status...");
+    textsize(statustext, &width, &height, CM->bar_cr);
+    drawtext(statustext, (CM->ww + BORDER_WIDTH) - width, PANEL_HEIGHT, CM->bar_cr);
 
     /* get client count */
     int n = 0;
@@ -1281,11 +1358,11 @@ void drawbar(bool active_monitor) {
     if (!n) return;
 
     /* get total width of clients */
-    int client_area = (CM->ww + BORDER_WIDTH) - offsetx - te.width - 10;
+    int client_area = (CM->ww + BORDER_WIDTH) - offsetx - width - 10;
     int i = 0, extra = 0, tw = 0, mw = client_area / n;
     for (client *c=CM->head; c; c=c->next) {
-        cairo_text_extents(CM->bar_cr, c->name, &te);
-        tw = 5 + te.width;
+        textsize(c->name, &width, &height, CM->bar_cr);
+        tw = 5 + width;
         if (tw < mw) extra += (mw - tw); else i++;
     }
     if (i > 0) mw += extra / i;
@@ -1294,24 +1371,21 @@ void drawbar(bool active_monitor) {
     char name[255]; bool bar_full = false;
     for (client *c=CM->head; c; c=c->next) {
         unsigned int gap = 0; bool get_gap = true;
-        while ((te.width && 5 + te.width > mw) || get_gap) {
+        while ((width && 5 + width > mw) || get_gap) {
             strcpy(name, c->name); get_gap = false;
             if (gap && gap+3<=strlen(c->name)) {
                 for (int i=1; i<4; ++i) name[strlen(c->name) - gap - i] = '.';
                 name[strlen(c->name) - gap] = 0;
             }
-            cairo_text_extents(CM->bar_cr, name, &te);
+            textsize(name, &width, &height, CM->bar_cr);
             if ((bar_full = (++gap >= strlen(c->name) - 2)))
             { c = CM->current; snprintf(name, 254, "%s [ + %d other clients ]", c->name, n-1); break; }
         }
 
         rgb = xcb_get_colorpixel(c == CM->current ? "#44ddff" : "#9d9d9d");
         cairo_set_source_rgb(CM->bar_cr, (double)((rgb >> 16) / 255.0), (double)((rgb >> 8 & 0xFF) / 255.0), (double)((rgb & 0xFF) / 255.0));
-
-        cairo_text_extents(CM->bar_cr, name, &te);
-        cairo_move_to(CM->bar_cr, offsetx - te.x_bearing, PANEL_HEIGHT / 2 - te.height / 2 - te.y_bearing);
-        cairo_show_text(CM->bar_cr, name);
-        offsetx += 5 + te.width; te.width = 0;
+        drawtext(name, offsetx, PANEL_HEIGHT, CM->bar_cr);
+        offsetx += 5 + width; width = 0;
         if (bar_full) break;
     }
 }
@@ -1327,7 +1401,7 @@ static void setup_monitor(int i, int x, int y, int w, int h)
 {
     select_monitor(i);
     if (!(CM->desktops = calloc(DESKTOPS, sizeof(desktop)))) die("error: could not allocate memory for desktops @ monitor %d\n", i);
-    CM->ww = w - BORDER_WIDTH; CM->wh = h - (SHOW_PANEL ? PANEL_HEIGHT : 0) - BORDER_WIDTH;
+    CM->ww = w - BORDER_WIDTH + 2; CM->wh = h - (SHOW_PANEL ? PANEL_HEIGHT : 0) - BORDER_WIDTH + 2;
     CM->wx = x; CM->wy = y; CM->showpanel = SHOW_PANEL; CM->mode = DEFAULT_MODE;
     CM->master_size = ((CM->mode == BSTACK) ? CM->wh : CM->ww) * MASTER_SIZE;
 
@@ -1352,27 +1426,18 @@ static void setup_monitor(int i, int x, int y, int w, int h)
     DEBUGP("%d: %dx%d+%d,%d\n", i, CM->ww, CM->wh, CM->wx, CM->wy);
 }
 
-/* set initial values
- * root window - screen height/width - atoms - xerror handler
- * set masks for reporting events handled by the wm
- * and propagate the suported net atoms
- */
-int setup(int default_screen) {
-    sigchld();
-    screen = xcb_screen_of_display(dis, default_screen);
-    if (!screen) die("error: cannot aquire screen\n");
-
-    /* check if another wm is running */
-    if (xcb_checkotherwm()) die("error: other wm is running\n");
-
+static void setup_monitors(int window)
+{
 #if XINERAMA
     xcb_xinerama_query_screens_reply_t *xinerama_reply;
     xcb_xinerama_screen_info_iterator_t xinerama_iter;
-    if (!(xinerama_reply = xcb_xinerama_query_screens_reply(dis, xcb_xinerama_query_screens(dis), NULL))) /* TODO: check error */
-        die("error: xinerama failed to query screens\n");
-    xinerama_iter = xcb_xinerama_query_screens_screen_info_iterator(xinerama_reply);
-    MONITORS = xinerama_iter.rem?xinerama_iter.rem:MONITORS;
-    free(xinerama_reply);
+    if (!window) {
+        if (!(xinerama_reply = xcb_xinerama_query_screens_reply(dis, xcb_xinerama_query_screens(dis), NULL))) /* TODO: check error */
+            die("error: xinerama failed to query screens\n");
+        xinerama_iter = xcb_xinerama_query_screens_screen_info_iterator(xinerama_reply);
+        MONITORS = xinerama_iter.rem?xinerama_iter.rem:MONITORS;
+        free(xinerama_reply);
+    } else MONITORS = 1; /* window mode */
 #endif /* XINERAMA */
 
     /* alloc monitors */
@@ -1380,20 +1445,50 @@ int setup(int default_screen) {
     if (!(monitors = calloc(MONITORS, sizeof(monitor)))) die("error: could not allocate memory for monitors");
 
 #if XINERAMA
-    if (xinerama_iter.rem) {
+    if (xinerama_iter.rem && !window) {
         for (int i=0; xinerama_iter.rem; xcb_xinerama_screen_info_next(&xinerama_iter)) {
             setup_monitor(i++, xinerama_iter.data->x_org, xinerama_iter.data->y_org,
-                          xinerama_iter.data->width,
-                          xinerama_iter.data->height - (SHOW_PANEL ? PANEL_HEIGHT : 0));
+                    xinerama_iter.data->width,
+                    xinerama_iter.data->height - (SHOW_PANEL ? PANEL_HEIGHT : 0));
         }
-    } else
+    } else setup_monitor(0, 0, 0, screen->width_in_pixels, screen->height_in_pixels);
+#else /* XINERAMA */
+    setup_monitor(0, 0, 0, screen->width_in_pixels, screen->height_in_pixels);
 #endif /* XINERAMA */
-    {
-        setup_monitor(0, 0, 0, screen->width_in_pixels, screen->height_in_pixels);
+}
+
+/* set initial values
+ * root window - screen height/width - atoms - xerror handler
+ * set masks for reporting events handled by the wm
+ * and propagate the suported net atoms
+ */
+int setup(int window, int default_screen) {
+    sigchld();
+    strcpy(statustext, WMNAME" "VERSION);
+
+    screen = xcb_screen_of_display(dis, default_screen);
+    if (!screen) die("error: cannot aquire screen\n");
+
+    /* window mode */
+    if (window) {
+        window = xcb_generate_id(dis);
+        xcb_create_window(dis, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, 640, 480, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, NULL);
+        xcb_map_window(dis, (screen->root = window));
+        screen->width_in_pixels = 640; screen->height_in_pixels = 480;
     }
 
+    /* check if another wm is running */
+    if (xcb_checkotherwm()) die("error: other wm is running\n");
+
+    /* setup monitors */
+    setup_monitors(window);
     win_focus   = getcolor(FOCUS);
     win_unfocus = getcolor(UNFOCUS);
+
+#if OPENGL
+    if (setupgl(screen->root, screen->width_in_pixels, screen->height_in_pixels) == -1)
+        die("error: failed to enable composition\n");
+#endif
 
     /* setup keyboard */
     if (setup_keyboard() == -1)
@@ -1402,10 +1497,6 @@ int setup(int default_screen) {
     /* set up atoms for dialog/notification windows */
     xcb_get_atoms(WM_ATOM_NAME, wmatoms, WM_COUNT);
     xcb_get_atoms(NET_ATOM_NAME, netatoms, NET_COUNT);
-
-    /* check if another wm is running */
-    if (xcb_checkotherwm())
-        die("error: other wm is running\n");
 
     xcb_change_property(dis, XCB_PROP_MODE_REPLACE, screen->root, netatoms[NET_SUPPORTED], XCB_ATOM_ATOM, 32, NET_COUNT, netatoms);
     grabkeys();
@@ -1612,25 +1703,41 @@ client* wintoclient(xcb_window_t w) {
     return c;
 }
 
-int xerrorstart() {
-    die("error: another window manager is already running\n");
-    return -1;
+/* open xcb connection */
+int openconnection(int *default_screen)
+{
+#if !OPENGL
+    return !xcb_connection_has_error((dis = xcb_connect(NULL, default_screen)));
+#else
+    return connectiongl(&dis, default_screen);
+#endif
+}
+
+/* close xcb connection */
+void closeconnection()
+{
+#if !OPENGL
+    xcb_disconnect(dis);
+#else
+    closeconnectiongl();
+#endif
 }
 
 int main(int argc, char *argv[]) {
-    int default_screen;
-    if (argc == 2 && strcmp("-v", argv[1]) == 0) {
+    int default_screen, window = 0;
+    if (argc == 2 && !strcmp("-v", argv[1])) {
         fprintf(stdout, "%s-%s\n", WMNAME, VERSION);
         return EXIT_SUCCESS;
-    } else if (argc != 1) die("usage: %s [-v]\n", WMNAME);
-    if (xcb_connection_has_error((dis = xcb_connect(NULL, &default_screen))))
-        die("error: cannot open display\n");
-    if (setup(default_screen) != -1) {
+    } else if (argc == 2 && !strcmp("-t", argv[1])) window = 1;
+      else if (argc != 1) die("usage: %s [-v][-t]\n", WMNAME);
+    if (!openconnection(&default_screen))
+        die("error: cannot open xcb connection.\n");
+    if (setup(window, default_screen) != -1) {
       desktopinfo(); /* zero out every desktop on (re)start */
       run();
     }
     cleanup();
-    xcb_disconnect(dis);
+    closeconnection();
     return retval;
 }
 
