@@ -8,7 +8,7 @@ BINDIR ?= ${PREFIX}/bin
 MANPREFIX = ${PREFIX}/share/man
 
 INCS = -I. -I/usr/include
-LIBS = -L/usr/lib -lc -lX11-xcb `pkg-config --libs gl x11 xcb-glx xcb-composite xcb-icccm xcb-keysyms cairo pangocairo`
+LIBS = -L/usr/lib -lc -lX11-xcb `pkg-config --libs gl x11 xcb-glx xcb-damage xcb-composite xcb-icccm xcb-keysyms cairo pangocairo`
 
 CPPFLAGS = -DVERSION=\"${VERSION}\" -DWMNAME=\"${WMNAME}\"
 CFLAGS   = -std=c99 -pedantic -Wall -Wextra ${INCS} ${CPPFLAGS} `pkg-config --cflags xcb cairo pangocairo`

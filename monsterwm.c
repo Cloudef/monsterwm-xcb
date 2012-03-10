@@ -928,7 +928,7 @@ void maprequest(xcb_generic_event_t *e) {
  * and on on pointer movement resize or move the window under the curson.
  * if the received event is a map request or a configure request call the
  * appropriate handler, and stop listening for other events.
- * Ungrab the poitner and event handling is passed back to run() function.
+ u Ungrab the poitner and event handling is passed back to run() function.
  * Once a window has been moved or resized, it's marked as floating.
  */
 void mousemotion(const Arg *arg) {
@@ -1227,6 +1227,7 @@ void run(void) {
         if ((ev = xcb_wait_for_event(dis))) {
             if (events[ev->response_type & ~0x80]) events[ev->response_type & ~0x80](ev);
             else { DEBUGP("xcb: unimplented event: %d\n", ev->response_type & ~0x80); }
+            eventgl(ev); /* pass event to compositor as well */
             free(ev);
         }
 #if OPENGL
@@ -1474,7 +1475,7 @@ int setup(int default_screen) {
     /* window mode */
     if (realroot) {
         if (realroot == 2) {
-            screen->width_in_pixels = 640;
+            screen->width_in_pixels  = 640;
             screen->height_in_pixels = 480;
         }
         realroot = screen->root;

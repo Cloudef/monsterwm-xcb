@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <string.h>
 #include "glcomposite.h"
 #include <xcb/xcb.h>
@@ -16,16 +17,19 @@ static GLXContext          glctx;
 static GLXFBConfig         pixconfig;
 static int glwidth, glheight;
 
+static bool glready = false;
+
 /* GL extensions */
 static PFNGLXBINDTEXIMAGEEXTPROC    glXBindTexImageEXT      = NULL;
 static PFNGLXRELEASETEXIMAGEEXTPROC glXReleaseTexImageEXT   = NULL;
 
 typedef struct glwin
 {
-   xcb_window_t win;
-   unsigned int tex;
-   GLXPixmap    pix;
+   xcb_window_t         win;
+   unsigned int         tex;
+   GLXPixmap            pix;
    int x, y, w, h;
+   char hidden, alpha;
    struct glwin *prev, *next;
 } glwin;
 
@@ -37,6 +41,61 @@ static void xcb_get_attributes(xcb_window_t *windows, xcb_get_window_attributes_
     for (unsigned int i = 0; i < count; i++) reply[i]   = xcb_get_window_attributes_reply(dis, cookies[i], NULL);
 }
 
+/* bind windows to texture */
+static void bind_glwin(glwin *win)
+{
+   glBindTexture(GL_TEXTURE_2D, win->tex);
+
+   /* set filtering */
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+   /* bind pixmap */
+   glXBindTexImageEXT(gldis, win->pix, GLX_FRONT_LEFT_EXT, NULL);
+
+   /* start draw */
+   xcb_grab_server(dis); /* tearless */
+   glXWaitX();
+}
+
+/* unbinds window from texture */
+static void unbind_glwin(glwin *win)
+{
+   /* stop draw */
+   glXReleaseTexImageEXT(gldis, win->pix, GLX_FRONT_LEFT_EXT);
+   xcb_ungrab_server(dis);
+
+   /* unbind texture */
+   glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+/* creates gl texture from X pixmap */
+static int pixmap_glwin(glwin *win)
+{
+   int pixatt[] = { GLX_TEXTURE_TARGET_EXT, GLX_TEXTURE_2D_EXT,
+                    GLX_TEXTURE_FORMAT_EXT, GLX_TEXTURE_FORMAT_RGB_EXT,
+                    None };
+   xcb_pixmap_t xcb_pix;
+
+   /* destory old pixmap if it exists */
+   if (win->pix) glXDestroyPixmap(gldis, win->pix);
+
+   /* create gl texture from pixmap */
+   xcb_pix = xcb_generate_id(dis);
+   xcb_composite_name_window_pixmap(dis, win->win, xcb_pix);
+
+   /* only needed when we arent real root */
+   if (glrealroot) xcb_create_pixmap(dis, 24, xcb_pix, glroot, win->w, win->h);
+   win->pix = glXCreatePixmap(gldis, pixconfig, xcb_pix, pixatt);
+   xcb_free_pixmap(dis, xcb_pix);
+
+   if (!win->tex) glGenTextures(1, &win->tex);
+   return 1;
+}
+
+/* updates window position */
 static void update_glwin(glwin *win)
 {
    xcb_get_geometry_reply_t *geometry;
@@ -45,36 +104,45 @@ static void update_glwin(glwin *win)
    if (!(geometry = xcb_get_geometry_reply(dis, xcb_get_geometry(dis, win->win), NULL)))
       return;
 
-   printf("geom: %ux%u+%d+%d\n", geometry->width, geometry->height, geometry->x, geometry->y);
-
-   win->w = geometry->width; win->h = geometry->height,
-   win->x = geometry->x;     win->y = geometry->y;
+   win->w = geometry->width;  win->h = geometry->height,
+   win->x = geometry->x;      win->y = geometry->y;
    free(geometry);
+
+   /* mark this window as hidden? */
+   win->hidden = 0;
+        if (win->x + win->w < 1 || win->x > glwidth)  win->hidden = 1;
+   else if (win->y + win->h < 1 || win->y > glheight) win->hidden = 1;
 }
 
+/* allocate gl window */
 static glwin* alloc_glwin(xcb_window_t win, glwin *prev)
 {
-   int pixatt[] = { GLX_TEXTURE_TARGET_EXT, GLX_TEXTURE_RECTANGLE_EXT,
-                    GLX_TEXTURE_FORMAT_EXT, GLX_TEXTURE_FORMAT_RGB_EXT,
-                    None };
-   xcb_pixmap_t xcb_pix;
-   xcb_get_window_attributes_reply_t  *attr[1];
    glwin *w;
+   xcb_get_window_attributes_reply_t  *attr[1];
 
    xcb_get_attributes(&win, attr, 1);
-   if (!attr[0] || attr[0]->override_redirect) return NULL;
+   if (!attr[0]) return NULL;
 
    /* allocate to stack */
    if (!(w = malloc(sizeof(glwin)))) return NULL;
-   w->win  = win;
-   w->tex  = 0;
-   w->pix  = 0;
-   w->w    = 0;
-   w->h    = 0;
-   w->x    = 0;
-   w->y    = 0;
-   w->next = NULL;
-   w->prev = prev;
+   w->win      = win;
+   // w->dam      = 0;
+   w->tex      = 0;
+   w->pix      = 0;
+   w->w        = 0;
+   w->h        = 0;
+   w->x        = 0;
+   w->y        = 0;
+   w->alpha    = 0;
+   w->hidden   = 0;
+   w->next     = NULL;
+   w->prev     = prev;
+
+#if 0
+   /* create damage for window */
+   w->dam = xcb_generate_id(dis);
+   xcb_damage_create(dis, w->dam, win, XCB_DAMAGE_REPORT_LEVEL_RAW_RECTANGLES);
+#endif
 
    /* update window information first */
    update_glwin(w);
@@ -82,47 +150,37 @@ static glwin* alloc_glwin(xcb_window_t win, glwin *prev)
    /* redirect window */
    xcb_composite_redirect_window(dis, win, XCB_COMPOSITE_REDIRECT_MANUAL);
 
-   /* create gl texture from pixmap */
-   xcb_pix = xcb_generate_id(dis);
-   xcb_composite_name_window_pixmap(dis, win, xcb_pix);
-
-   /* only needed when we arent real root */
-   if (glrealroot)
-      xcb_create_pixmap (dis, 24, xcb_pix, glroot, w->w, w->h);
-
-   w->pix = glXCreatePixmap(gldis, pixconfig, xcb_pix, pixatt);
-   xcb_free_pixmap(dis, xcb_pix);
-
-   glGenTextures(1, &w->tex);
-   glBindTexture(GL_TEXTURE_RECTANGLE_ARB, w->tex);
-   glXBindTexImageEXT(gldis, w->pix, GLX_FRONT_LEFT_EXT, NULL);
-
-   glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-   glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-   glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-   glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+   /* create pixmap */
+   if (!pixmap_glwin(w)) {
+      free(w);
+      return NULL;
+   }
 
    return w;
 }
 
+/* free glwin pointer and correct stack */
 static glwin* dealloc_glwin(glwin *w)
 {
    glwin *prev;
    assert(w);
 
+   /* point stack to right windows */
    if (!(prev = w->prev)) glstack = NULL;
    else w->prev->next = w->next;
 
    /* release */
+   // if (w->dam) xcb_damage_destroy(dis, w->dam);
    if (w->win) xcb_composite_unredirect_window(dis, w->win, XCB_COMPOSITE_REDIRECT_MANUAL);
 
    /* free */
-   if (w->pix) glXReleaseTexImageEXT(gldis, w->pix, GLX_FRONT_LEFT_EXT);
+   if (w->pix) glXDestroyPixmap(gldis, w->pix);
    if (w->tex) glDeleteTextures(1, &w->tex);
    free(w);
    return prev;
 }
 
+/* point X window to glwindow */
 static glwin* win_to_glwin(xcb_window_t win)
 {
    for (glwin *w = glstack; w; w = w->next)
@@ -130,6 +188,7 @@ static glwin* win_to_glwin(xcb_window_t win)
    return NULL;
 }
 
+/* add new glwindow to stack */
 static glwin* add_glwin(xcb_window_t win)
 {
    glwin *w;
@@ -139,23 +198,45 @@ static glwin* add_glwin(xcb_window_t win)
    return (w->next = alloc_glwin(win, w));
 }
 
+/* raises glwin to top of stack */
+static void raise_glwin(glwin *win)
+{
+   glwin *w;
+   assert(win);
+   if (win->prev) win->prev->next = win->next;
+   else           glstack = win->next;
+   for (w = glstack; w && w->next; w = w->next);
+   w->next = win;
+}
+
+/* raise glwindow using X window as argument */
+void raisegl(xcb_window_t win)
+{
+   raise_glwin(win_to_glwin(win));
+}
+
+/* draw glwindow */
 static void draw_glwin(glwin *win)
 {
-   float wx, wy, ww, hh;
+   float wx, wy, ww, wh;
    assert(win);
 
-   ww  = (float)win->w/glwidth; hh = (float)win->h/glheight;
-   wx  = (float)win->x/glwidth; wy = (float)win->y/glheight;
-   wy += 1-hh; /* shifts the draw so we don't start from center */
+   /* no need to draw */
+   if (win->hidden) return;
+
+   ww  = (float)win->w/glwidth; wh = (float)win->h/glheight;
+   wx  = (float)win->x/glwidth; wy = (float)(glheight-win->y)/glheight;
+   wy -= 1; /* The above coords are for _center of the window_, - with 1 and we get top of the window :) */
 
    /* TODO: use modern drawing methods, FBO's and such */
-   glBindTexture(GL_TEXTURE_RECTANGLE_ARB, win->tex);
+   bind_glwin(win);
    glBegin(GL_TRIANGLE_STRIP);
-   glTexCoord2f(win->w,      0); glVertex3f( wx+ww, wy+hh, 0.);
-   glTexCoord2f(0,           0); glVertex3f( wx-ww, wy+hh, 0.);
-   glTexCoord2f(win->w, win->h); glVertex3f( wx+ww, wy-hh, 0.);
-   glTexCoord2f(0,      win->h); glVertex3f( wx-ww, wy-hh, 0.);
+   glTexCoord2f(1, 0); glVertex3f(wx+ww, wy+wh, 0);
+   glTexCoord2f(0, 0); glVertex3f(wx-ww, wy+wh, 0);
+   glTexCoord2f(1, 1); glVertex3f(wx+ww, wy-wh, 0);
+   glTexCoord2f(0, 1); glVertex3f(wx-ww, wy-wh, 0);
    glEnd();
+   unbind_glwin(win);
 }
 
 /* print a message on standard error stream
@@ -169,6 +250,7 @@ static void die(const char *errstr, ...) {
    exit(EXIT_FAILURE);
 }
 
+/* choose pixmap framebuffer configuration */
 static GLXFBConfig ChoosePixmapFBConfig()
 {
    GLXFBConfig *confs;
@@ -216,6 +298,7 @@ void setrootgl(xcb_window_t root)
    free(query);
 }
 
+/* setup GL window */
 int setupgl(xcb_window_t root, int width, int height)
 {
    GLint att[] = { GLX_RGBA, GLX_DOUBLEBUFFER, None };
@@ -255,7 +338,9 @@ int setupgl(xcb_window_t root, int width, int height)
 
    /* get framebuffer configuration for pixmaps */
    pixconfig = ChoosePixmapFBConfig(gldis);
-   glEnable(GL_TEXTURE_RECTANGLE_ARB);
+   glEnable(GL_TEXTURE_2D);
+   glEnable(GL_BLEND);
+   glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
    /* setup bg color */
    glClearColor(.0, .0, .0, 1.0);
@@ -263,19 +348,43 @@ int setupgl(xcb_window_t root, int width, int height)
    return 1;
 }
 
+/* swapbuffers */
 void swapgl()
 {
    glXSwapBuffers(gldis, glroot);
    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 
+void configuregl(xcb_configure_notify_event_t *ev)
+{
+   glwin *win = win_to_glwin(ev->window);
+   if (!win) return;
+
+   update_glwin(win);
+   pixmap_glwin(win);
+}
+
+void eventgl(xcb_generic_event_t *ev)
+{
+   switch(ev->response_type & ~0x80) {
+      case XCB_CONFIGURE_REQUEST:
+         configuregl((xcb_configure_notify_event_t*)ev);
+      break;
+   }
+}
+
+/* temporary loop code */
 void loopgl()
 {
    glwin *win;
+
+   glready = true;
+   if (!glready) return;
    for (win = glstack; win; win = win->next) {
-      update_glwin(win);
+      // update_glwin(win);
       draw_glwin(win);
    }
+   glready = false;
 }
 
 /* open openGL connection which needs x11-xcb */
@@ -299,10 +408,17 @@ int connectiongl(xcb_connection_t **wmcon, int *screen)
    if (ver->minor_version < 2)
       die("error: composite extension 0.2 or newer needed!\n");
 
+#if 0
+   xcb_prefetch_extension_data(dis, &xcb_damage_id);
+   if (!xcb_get_extension_data(dis, &xcb_damage_id))
+      die("error: no damage extension\n");
+#endif
+
    *screen = glscrn; *wmcon = dis;
    return 1;
 }
 
+/* close openGL connection */
 void closeconnectiongl()
 {
    glwin *wn;
