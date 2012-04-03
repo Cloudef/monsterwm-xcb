@@ -32,7 +32,7 @@
 /* TODO: Reduce SLOC */
 
 /* set this to 1 to enable debug prints */
-#if 1
+#if 0
 #  define DEBUG(x)      puts(x);
 #  define DEBUGP(x,...) printf(x, ##__VA_ARGS__);
 #else
@@ -326,7 +326,7 @@ static void drawtext(const char *str, int x, int y, cairo_t *cr)
     pango_font_description_free(desc);
 
     pango_layout_get_pixel_size(layout, &width, &height);
-    cairo_move_to(CM->bar_cr, x, y - (height/3));
+    cairo_move_to(cr, x, y - (height/3));
 
     pango_cairo_update_layout(cr, layout);
     pango_cairo_show_layout_line (cr, pango_layout_get_line (layout, 0));
