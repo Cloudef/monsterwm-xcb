@@ -159,6 +159,7 @@ static void maprequest(xcb_generic_event_t *e);
 static void monocle(int h, int y);
 static void move_down();
 static void move_up();
+static void mouse_aside();
 static void mousemotion(const Arg *arg);
 static void next_win();
 static client* prev_client();
@@ -689,6 +690,26 @@ void maprequest(xcb_generic_event_t *e) {
     grabbuttons(c);
 
     desktopinfo();
+}
+
+/* move the mouse pointer to the rightmost screen edge */
+void mouse_aside() {
+    xcb_query_pointer_reply_t	*reply = NULL;
+    int16_t                     rel_x = 0, rel_y = 0;
+
+    reply = xcb_query_pointer_reply(dis,
+                                    xcb_query_pointer(dis, screen->root),
+                                    NULL);
+    if (reply) {
+        rel_x = ww - reply->root_x;
+        DEBUGP("%s: warp relative pos (%d,%d)\n", __func__, rel_x, rel_y);
+        xcb_warp_pointer(dis,
+                         XCB_NONE, XCB_NONE,
+                         0, 0, 0, 0,
+                         rel_x, rel_y);
+    } else {
+        DEBUGP("%s: no mouse query info\n", __func__);
+    }
 }
 
 /* grab the pointer and get it's current position
