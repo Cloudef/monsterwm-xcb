@@ -551,7 +551,7 @@ void grabbuttons(client *c) {
         for (unsigned int m=0; m<LENGTH(modifiers); m++)
             if (CLICK_TO_FOCUS)
                 xcb_grab_button(dis, 1, c->win, XCB_EVENT_MASK_BUTTON_PRESS, XCB_GRAB_MODE_SYNC, XCB_GRAB_MODE_ASYNC,
-                        XCB_WINDOW_NONE, XCB_CURSOR_NONE, XCB_BUTTON_INDEX_ANY, XCB_BUTTON_MASK_ANY); 
+                        XCB_WINDOW_NONE, XCB_CURSOR_NONE, XCB_BUTTON_INDEX_ANY, XCB_BUTTON_MASK_ANY);
             else
                 xcb_grab_button(dis, 1, c->win, XCB_EVENT_MASK_BUTTON_PRESS, XCB_GRAB_MODE_SYNC, XCB_GRAB_MODE_ASYNC,
                         XCB_WINDOW_NONE, XCB_CURSOR_NONE, buttons[b].button, buttons[b].mask|modifiers[m]);
@@ -730,7 +730,8 @@ void mousemotion(const Arg *arg) {
     xcb_motion_notify_event_t *ev = NULL;
     bool ungrab = false;
     do {
-        if (e) free(e); xcb_flush(dis);
+        if (e) free(e);
+        xcb_flush(dis);
         while(!(e = xcb_wait_for_event(dis))) xcb_flush(dis);
         switch (e->response_type & ~0x80) {
             case XCB_CONFIGURE_REQUEST: case XCB_MAP_REQUEST:
